@@ -23,6 +23,8 @@ export function defaultSettings() {
     staleDays: 30, // nudge to re-check items untouched this long (0 = off)
     lookup: true, // look up unknown barcodes online
     scanSound: true,
+    remindersOn: false, // daily notification of what needs attention (needs an account: it is sent by the server)
+    reminderTime: '09:00', // when that notification comes (local time)
   };
 }
 

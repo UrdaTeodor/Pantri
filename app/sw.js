@@ -16,6 +16,10 @@
  *   {type: 'SKIP_WAITING'} -> activate this (waiting) worker now
  *   {type: 'GET_VERSION'}  -> replies {type: 'VERSION', version, dev} on event.ports[0] if
  *                             given (MessageChannel), else to the sending client
+ *
+ * Reminders (Web Push from the server): a push carries JSON {title, body, url, tag} and is shown
+ * as a notification (a newer one with the same tag replaces the older one quietly). Tapping it
+ * focuses an open app window and shows `url` there, or opens the app at `url`.
  */
 
 // <stamp> rewritten by tools/stamp.mjs at deploy time; keep '__BUILD__' and [] in the repo
@@ -154,3 +158,41 @@ async function withoutRedirect(response) {
     headers: response.headers,
   });
 }
+
+// ---- reminders: Web Push -------------------------------------------------------------------------
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = (event.data && event.data.json()) || {};
+  } catch {
+    data = { body: event.data ? event.data.text() : '' }; // not JSON: show the text as it is
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'Pantri', {
+      body: data.body || 'Open Pantri to see what needs attention today.',
+      icon: './icons/icon-192.png',
+      tag: data.tag || 'pantri',
+      renotify: false,
+      data: { url: data.url || './#/' },
+    }),
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const asked = new URL((event.notification.data && event.notification.data.url) || './#/', SCOPE).href;
+  const url = asked.startsWith(SCOPE) ? asked : ROOT_URL; // only ever open the app itself
+  event.waitUntil(
+    (async () => {
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      const app = windows.find((c) => c.url.startsWith(SCOPE));
+      if (!app) {
+        await self.clients.openWindow(url);
+        return;
+      }
+      await app.focus().catch(() => {});
+      // Only possible for windows this worker controls (all of them, once it has activated).
+      if (app.url !== url) await app.navigate(url).catch(() => {});
+    })(),
+  );
+});

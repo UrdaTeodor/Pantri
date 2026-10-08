@@ -12,6 +12,8 @@ import {
   deleteWasteEvent, setSiteSchedule,
 } from '../store.js';
 import { isPersisted, requestPersistence } from '../db.js';
+import { cloudConfigured } from '../cloud.js';
+import { RemindersSettings } from './reminders.js';
 
 const LINKS = [
   ['settings', 'sliders', 'Settings', 'Opening hours, closures, reminders, scanning'],
@@ -184,6 +186,7 @@ export function Settings() {
   return html`
     <${Header} title="Settings" back="#/more" />
     <main class="page">
+      ${cloudConfigured && html`<${RemindersSettings} />`}
       <section class="section">
         <h2 class="section-title">${multi ? 'Default opening hours' : 'Opening hours'}</h2>
         <div class="card pad">

@@ -2,6 +2,7 @@ import { html, render } from './ui/lib.js';
 import { App } from './ui/app.js';
 import { showToast } from './ui/nav.js';
 import { initStore } from './store.js';
+import { startReminderSync } from './reminders.js';
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
@@ -35,3 +36,4 @@ function registerServiceWorker() {
 await initStore();
 render(html`<${App} />`, document.getElementById('app'));
 registerServiceWorker();
+startReminderSync(); // does nothing unless the cloud features are set up (config.js)
