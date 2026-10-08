@@ -1,6 +1,11 @@
 # Dependencies (app/vendor/ IS committed: the deploy does not run npm)
 node_modules/
 
+# Secrets (Supabase function secrets, VAPID private key, ...) and Supabase CLI state
+.env*
+supabase/.temp/
+supabase/.branches/
+
 # Test / tool output
 test-results/
 playwright-report/
