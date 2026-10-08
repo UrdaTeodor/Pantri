@@ -12,12 +12,15 @@ import {
   deleteWasteEvent, setSiteSchedule,
 } from '../store.js';
 import { isPersisted, requestPersistence } from '../db.js';
+import { cloudConfigured, isSignedIn } from '../cloud.js';
+import { CloudStatusText } from './account.js';
 
 const LINKS = [
   ['settings', 'sliders', 'Settings', 'Opening hours, closures, reminders, scanning'],
   ['locations', 'pin', 'Locations & sites', 'Sites, rooms, fridges, shelves'],
   ['categories', 'tag', 'Categories', 'Drinks, snacks, cleaning…'],
   ['waste', 'trash', 'Waste report', 'What got thrown away, and what to buy less of'],
+  ...(cloudConfigured ? [['account', 'upload', 'Account & online backup', '']] : []),
   ['backup', 'shield', 'Backup & restore', 'Save your pantry to a file'],
   ['help', 'help', 'How it works', 'Estimates, checks and reorder suggestions'],
 ];
@@ -48,12 +51,12 @@ export function More() {
             <span class="row-icon"><${Icon} name=${icon} /></span>
             <span class="row-main">
               <span class="row-title">${title}</span>
-              <span class="row-sub">${to === 'backup' ? (last ? `Last backup ${dayText(last, now)}` : 'No backup yet') : sub}</span>
+              <span class="row-sub">${to === 'account' ? html`<${CloudStatusText} />` : to === 'backup' ? (last ? `Last backup ${dayText(last, now)}` : 'No backup yet') : sub}</span>
             </span>
             <${Icon} name="chevron" />
           </button>`)}
       </div>
-      <p class="muted center small">Pantri${version ? ` · version ${version}` : ''} · your data stays on this phone</p>
+      <p class="muted center small">Pantri${version ? ` · version ${version}` : ''} · ${isSignedIn() ? 'backed up online' : 'your data stays on this phone'}</p>
     </main>`;
 }
 
@@ -513,7 +516,9 @@ export function Backup() {
     <${Header} title="Backup & restore" back="#/more" />
     <main class="page">
       <div class="card pad">
-        <p>Your pantry is stored only in this app on this phone. Save a backup file now and then — for example to Google Drive or by emailing it to yourself.</p>
+        <p>${isSignedIn()
+          ? 'Your pantry is also backed up online (More → Account & online backup). A backup file is an extra copy you keep yourself.'
+          : 'Your pantry is stored only in this app on this phone. Save a backup file now and then — for example to Google Drive or by emailing it to yourself.'}</p>
         <p class="muted">Last backup: ${last ? `${dayText(last, now)} (${dateText(last, now)})` : 'never'}</p>
         <button class="btn primary block" onClick=${save}><${Icon} name="download" size=${18} /> Save backup file</button>
         ${canShareFile && html`<button class="btn block" onClick=${share}><${Icon} name="share" size=${18} /> Share backup (Drive, email…)</button>`}
@@ -568,5 +573,6 @@ export function Help() {
 
       <h2>Your data</h2>
       <p>Everything stays on this phone — nothing is uploaded except barcode lookups. Save a backup file regularly (More → Backup & restore).</p>
+      ${cloudConfigured && html`<p>Optionally, sign in (More → Account & online backup) to keep a copy online and use the same pantry on several phones. Changes made on two phones at once are settled by keeping the newer ones; the other version stays available under Earlier versions.</p>`}
     </main>`;
 }

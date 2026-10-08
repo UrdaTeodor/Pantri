@@ -592,6 +592,17 @@ export function importJson(text) {
   set(next);
 }
 
+/**
+ * Take a whole state from elsewhere (the online copy): completed like a backup, saved on this phone and
+ * announced to subscribers like any change, but without an undo step. Returns the state now in use.
+ */
+export function replaceState(next) {
+  const s = migrate(next);
+  undoState = null;
+  set(s);
+  return state;
+}
+
 export function markBackedUp() {
   mutate((d, now) => {
     d.meta.lastBackupAt = now;
