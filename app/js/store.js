@@ -4,6 +4,7 @@ import * as db from './db.js';
 import { codeKey } from './codes.js';
 import {
   defaultSettings, estimate, fifo, rateSuggestion, descendants, parseYmd, startOfDay, DAY, productSettings, siteOf,
+  PRESENT,
 } from './model.js';
 
 const subs = new Set();
@@ -21,18 +22,18 @@ export function subscribe(fn) {
 }
 
 export function initialState(now) {
-  const office = uid();
+  const main = uid();
   const kitchen = uid();
   return {
     version: 1,
     settings: defaultSettings(),
-    // Top-level locations are sites; add more (e.g. "Corp House") to track each one separately.
+    // Top-level locations are sites; add more (another building, a flat…) to track each one separately.
     locations: [
-      { id: office, name: 'Office', parentId: null, order: 0 },
-      { id: kitchen, name: 'Kitchen', parentId: office, order: 0 },
+      { id: main, name: 'Main site', parentId: null, order: 0 },
+      { id: kitchen, name: 'Kitchen', parentId: main, order: 0 },
       { id: uid(), name: 'Fridge', parentId: kitchen, order: 0 },
       { id: uid(), name: 'Cupboards', parentId: kitchen, order: 1 },
-      { id: uid(), name: 'Storage room', parentId: office, order: 1 },
+      { id: uid(), name: 'Storage room', parentId: main, order: 1 },
     ],
     categories: ['Drinks', 'Coffee & tea', 'Snacks', 'Fridge & dairy', 'Fruit', 'Cleaning', 'Paper & disposables', 'Other']
       .map((name, order) => ({ id: uid(), name, order })),
@@ -56,12 +57,13 @@ export function newProduct(now) {
 /** Fill in anything missing (older backups, partial imports). Throws if it isn't pantry data at all. */
 export function migrate(s) {
   if (!s || typeof s !== 'object' || !Array.isArray(s.products) || !Array.isArray(s.batches)) {
-    throw new Error('This file is not an Office Pantry backup.');
+    throw new Error('This file is not a Pantri backup.');
   }
   const now = Date.now();
   return {
     version: 1,
-    settings: { ...defaultSettings(), ...(s.settings || {}) },
+    // Data from before opening hours were optional always used them: keep that behaviour.
+    settings: { ...defaultSettings(), ...(s.settings && s.settings.hoursOn === undefined ? { hoursOn: true } : {}), ...(s.settings || {}) },
     locations: s.locations || [],
     categories: s.categories || [],
     products: s.products.map(p => ({ ...newProduct(now), ...p })),
@@ -73,6 +75,11 @@ export function migrate(s) {
 }
 
 // ---------- persistence ----------
+
+// The installed app and a browser tab share storage: tell each other about saves.
+// (Opened in initStore, i.e. only in the app — an open channel would keep a test process alive.)
+let channel = null;
+const rev = () => (state && state.meta && state.meta.rev) || 0;
 
 export async function initStore() {
   let loaded = null;
@@ -86,7 +93,28 @@ export async function initStore() {
   addEventListener('pagehide', flush);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flush();
+    else syncFromDisk();
   });
+  if (typeof BroadcastChannel === 'function') {
+    channel = new BroadcastChannel('pantri');
+    channel.onmessage = e => e.data && e.data.rev > rev() && syncFromDisk();
+  }
+}
+
+/** Another window saved newer data: take it instead of later overwriting it with our stale copy. */
+async function syncFromDisk() {
+  if (saving) return;
+  let loaded = null;
+  try {
+    loaded = await db.load();
+  } catch {
+    return;
+  }
+  if (loaded && ((loaded.meta && loaded.meta.rev) || 0) > rev()) {
+    state = migrate(loaded);
+    undoState = null;
+    for (const f of subs) f();
+  }
 }
 
 /** For tests: start from a given state and choose where saves go. */
@@ -112,8 +140,10 @@ function schedule() {
       dirty = false;
       try {
         await persistFn(state);
+        if (channel) channel.postMessage({ rev: rev() });
       } catch (e) {
         console.error('Saving failed', e);
+        if (typeof dispatchEvent === 'function') dispatchEvent(new CustomEvent('pantri:save-failed', { detail: e }));
       }
     }
     saving = null;
@@ -125,16 +155,20 @@ export function flush() {
 }
 
 function set(next) {
+  next.meta = { ...next.meta, rev: rev() + 1 };
   state = next;
   for (const f of subs) f();
   schedule();
 }
 
-/** Apply a change to a copy of the state. With `undo`, the previous state can be restored by undo(). */
-export function mutate(fn, { undo = false } = {}) {
+/**
+ * Apply a change to a copy of the state. With `undo`, the previous state can be restored by undo();
+ * `keepUndo` leaves an earlier undo available (for view-only changes like the chosen site).
+ */
+export function mutate(fn, { undo = false, keepUndo = false } = {}) {
   const draft = structuredClone(state);
   const result = fn(draft, Date.now());
-  undoState = undo ? state : null;
+  if (!keepUndo) undoState = undo ? state : null;
   set(draft);
   return result;
 }
@@ -157,14 +191,36 @@ const batchesOf = (d, id) => d.batches.filter(b => b.productId === id);
 const log = (d, e) => d.events.push({ id: uid(), ...e });
 const shelfLife = (expiry, now) => Math.max(0, Math.round((parseYmd(expiry) - startOfDay(now)) / DAY));
 
-/** Bake estimated usage into the recorded batch quantities, so later changes start from "now". */
-function materialize(d, p, now) {
+/**
+ * Bake estimated usage into the recorded batch quantities, so later changes start from "now".
+ * With `keepPending`, a product the estimate says is used up — but nobody confirmed — is left alone,
+ * so its "is it gone?" check stays for a person to answer.
+ */
+function materialize(d, p, now, { keepPending = false } = {}) {
   const est = estimate(p, batchesOf(d, p.id), productSettings(d, p), now);
+  if (keepPending && est.rate > 0 && est.total < PRESENT && est.recorded >= PRESENT) return;
   if (est.rate > 0) {
     for (const { batch, qty } of est.per) batch.qty = qty;
     d.batches = d.batches.filter(b => b.productId !== p.id || b.qty > 1e-6);
   }
   p.anchorAt = now;
+}
+
+const scheduleKey = s => JSON.stringify([s.hoursOn, s.workdays, s.dayStart, s.dayEnd, s.closed]);
+
+/**
+ * Apply a change that may alter products' opening hours (settings, site hours, moving locations).
+ * Estimates of the affected products are settled first, so new hours apply from now on.
+ */
+function changeSchedules(d, now, apply) {
+  const before = new Map(d.products.map(p => [p.id, scheduleKey(productSettings(d, p))]));
+  const trial = structuredClone(d);
+  apply(trial);
+  for (const p of d.products) {
+    const after = trial.products.find(x => x.id === p.id);
+    if (!after || scheduleKey(productSettings(trial, after)) !== before.get(p.id)) materialize(d, p, now, { keepPending: true });
+  }
+  apply(d);
 }
 
 // ---------- products ----------
@@ -193,7 +249,8 @@ export function updateProduct(id, patch) {
     if (!p) return;
     const rateChanged = 'rate' in patch && JSON.stringify(patch.rate || null) !== JSON.stringify(p.rate || null);
     const siteChanged = 'locationId' in patch && siteOf(d.locations, patch.locationId) !== siteOf(d.locations, p.locationId);
-    if (rateChanged || siteChanged) materialize(d, p, now); // new rate / site hours apply from now on, not retroactively
+    // A new rate or site hours apply from now on, not retroactively.
+    if (rateChanged || siteChanged) materialize(d, p, now, { keepPending: true });
     Object.assign(p, patch);
   });
 }
@@ -245,6 +302,8 @@ export function count(id, qty) {
     const p = productOf(d, id);
     if (!p) return null;
     const bs = fifo(batchesOf(d, id));
+    const estimated = estimate(p, bs, productSettings(d, p), now).total;
+    if (qty > estimated + 0.5) p.orderedAt = null; // more than expected: the order has arrived
     let left = qty;
     for (let k = bs.length - 1; k >= 0; k--) {
       const keep = Math.min(Math.ceil(bs[k].qty - 1e-9), left);
@@ -395,9 +454,11 @@ export function moveLocation(id, parentId) {
   mutate((d, now) => {
     const l = d.locations.find(x => x.id === id);
     if (!l || id === parentId || descendants(d.locations, id).has(parentId)) return;
-    for (const p of d.products) materialize(d, p, now);
-    l.parentId = parentId;
-    l.order = nextOrder(d.locations.filter(x => x.parentId === parentId && x.id !== id));
+    changeSchedules(d, now, x => {
+      const moved = x.locations.find(y => y.id === id);
+      moved.parentId = parentId;
+      moved.order = nextOrder(x.locations.filter(y => y.parentId === parentId && y.id !== id));
+    });
   });
 }
 
@@ -418,23 +479,25 @@ export function deleteLocation(id) {
   mutate((d, now) => {
     const l = d.locations.find(x => x.id === id);
     if (!l) return;
-    for (const p of d.products) materialize(d, p, now);
     const parent = l.parentId || null;
-    for (const x of d.locations) if (x.parentId === id) x.parentId = parent;
-    for (const b of d.batches) if (b.locationId === id) b.locationId = parent;
-    for (const p of d.products) if (p.locationId === id) p.locationId = parent;
-    d.locations = d.locations.filter(x => x.id !== id);
+    changeSchedules(d, now, x => {
+      for (const y of x.locations) if (y.parentId === id) y.parentId = parent;
+      for (const b of x.batches) if (b.locationId === id) b.locationId = parent;
+      for (const p of x.products) if (p.locationId === id) p.locationId = parent;
+      x.locations = x.locations.filter(y => y.id !== id);
+    });
   }, { undo: true });
 }
 
 /** A site's own opening days/hours for usage estimates (null = same as Settings). */
 export function setSiteSchedule(siteId, schedule) {
   mutate((d, now) => {
-    const site = d.locations.find(l => l.id === siteId && !l.parentId);
-    if (!site) return;
-    for (const p of d.products) if (siteOf(d.locations, p.locationId) === siteId) materialize(d, p, now);
-    if (schedule) site.schedule = schedule;
-    else delete site.schedule;
+    if (!d.locations.some(l => l.id === siteId && !l.parentId)) return;
+    changeSchedules(d, now, x => {
+      const site = x.locations.find(l => l.id === siteId);
+      if (schedule) site.schedule = schedule;
+      else delete site.schedule;
+    });
   });
 }
 
@@ -442,7 +505,7 @@ export function setSiteSchedule(siteId, schedule) {
 export function setCurrentSite(siteId) {
   mutate(d => {
     d.meta.siteId = siteId || null;
-  });
+  }, { keepUndo: true });
 }
 
 /** Start tracking a product at another site: a copy with its own stock, usage and reorder settings. */
@@ -502,13 +565,13 @@ export function clearDoneShopping() {
 
 // ---------- settings & data ----------
 
-const TIMING = ['workdays', 'dayStart', 'dayEnd', 'closed'];
+const TIMING = ['hoursOn', 'workdays', 'dayStart', 'dayEnd', 'closed'];
 
 export function updateSettings(patch) {
   mutate((d, now) => {
     const timing = TIMING.some(k => k in patch && JSON.stringify(patch[k]) !== JSON.stringify(d.settings[k]));
-    if (timing) for (const p of d.products) materialize(d, p, now); // new hours apply from now on
-    Object.assign(d.settings, patch);
+    if (timing) changeSchedules(d, now, x => Object.assign(x.settings, patch)); // new hours apply from now on
+    else Object.assign(d.settings, patch);
   });
 }
 
@@ -519,7 +582,7 @@ export function deleteWasteEvent(eventId) {
 }
 
 export function exportJson() {
-  return JSON.stringify({ app: 'office-pantry', exportedAt: new Date().toISOString(), state }, null, 1);
+  return JSON.stringify({ app: 'pantri', exportedAt: new Date().toISOString(), state }, null, 1);
 }
 
 export function importJson(text) {

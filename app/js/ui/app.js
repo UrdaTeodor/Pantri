@@ -1,8 +1,8 @@
 // App shell: picks the screen for the route, renders the bottom nav, sheets and toasts.
 
-import { html, useState, useEffect, useMemo, useReducer } from './lib.js';
+import { html, useState, useEffect, useLayoutEffect, useMemo, useReducer, Component } from './lib.js';
 import {
-  useNav, currentRoute, currentSheets, currentToast, closeSheet, hideToast, goTab, navigate, TABS,
+  useNav, currentRoute, currentSheets, currentToast, closeSheet, hideToast, goTab, navigate, goBack, showToast, TABS,
 } from './nav.js';
 import { AppCtx, Icon, useApp, siteContext } from './kit.js';
 import { Today } from './today.js';
@@ -22,9 +22,53 @@ const SCREENS = {
 };
 const TAB_OF = { product: 'pantry', new: 'pantry', edit: 'pantry', settings: 'more', locations: 'more', categories: 'more', waste: 'more', backup: 'more', help: 'more' };
 
+/** Keeps one broken screen from blanking the whole app. */
+class ScreenBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  componentDidCatch(error) {
+    console.error(error);
+    this.setState({ error });
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return html`
+      <main class="page">
+        <div class="card pad error-card">
+          <h2>Something went wrong on this screen</h2>
+          <p class="muted">${String(this.state.error.message || this.state.error)}</p>
+          <div class="btn-row">
+            <button class="btn" onClick=${() => goBack('#/')}>Go back</button>
+            <button class="btn primary" onClick=${() => location.reload()}>Reload</button>
+          </div>
+        </div>
+      </main>`;
+  }
+}
+
+function useSaveWarnings() {
+  useEffect(() => {
+    let last = 0;
+    const warn = () => {
+      if (Date.now() - last < 60000) return;
+      last = Date.now();
+      showToast("Couldn't save your changes — the phone may be low on storage. Save a backup file.", { timeout: 10000 });
+    };
+    addEventListener('pantri:save-failed', warn);
+    return () => removeEventListener('pantri:save-failed', warn);
+  }, []);
+}
+
 function useStoreState() {
   const [, force] = useReducer(x => x + 1, 0);
-  useEffect(() => subscribe(force), []);
+  const seen = getState();
+  useLayoutEffect(() => {
+    const unsubscribe = subscribe(force);
+    if (getState() !== seen) force(); // changed before we subscribed
+    return unsubscribe;
+  }, []);
   return getState();
 }
 
@@ -97,6 +141,7 @@ function ToastHost() {
 
 export function App() {
   useNav();
+  useSaveWarnings();
   const state = useStoreState();
   const tick = useTick();
   const now = useMemo(() => Date.now(), [state, tick]);
@@ -109,7 +154,9 @@ export function App() {
   return html`
     <${AppCtx.Provider} value=${ctx}>
       <div class=${`app${scanning ? ' scanning' : ''}`}>
-        <${Screen} route=${route} key=${route.name === 'product' || route.name === 'edit' ? route.parts.join('/') : route.name} />
+        <${ScreenBoundary} key=${route.parts.join('/') || 'today'}>
+          <${Screen} route=${route} key=${route.name === 'product' || route.name === 'edit' ? route.parts.join('/') : route.name} />
+        <//>
       </div>
       ${!scanning && html`<${Nav} active=${active} />`}
       <${SheetHost} />

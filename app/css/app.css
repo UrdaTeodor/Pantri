@@ -1,4 +1,4 @@
-/* Office Pantry — mobile-first styles. Tokens first; light & dark. */
+/* Pantri — mobile-first styles. Tokens first; light & dark. */
 
 :root {
   --bg: #f3f6f5;
@@ -258,6 +258,10 @@ textarea.input { resize: vertical; }
 .group { margin: 6px 0 10px; padding: 12px 14px 4px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 .group legend { padding: 0 6px; }
 .switch { display: flex; align-items: center; gap: 12px; min-height: 44px; margin-bottom: 8px; }
+.setting { margin-bottom: 10px; }
+.setting + .setting, .setting + .field { padding-top: 10px; border-top: 1px solid var(--border); }
+.inline-num { display: flex; align-items: center; gap: 10px; margin: 0 0 6px 34px; }
+.setting .hint { margin-left: 34px; }
 .switch input { width: 22px; height: 22px; accent-color: var(--primary); flex: none; }
 .rate-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .rate-row select { flex: 1; min-width: 120px; }
@@ -325,9 +329,11 @@ textarea.input { resize: vertical; }
 /* ---------- reorder ---------- */
 
 .tick {
-  flex: none; width: 28px; height: 28px; border-radius: 8px;
+  position: relative; flex: none; width: 28px; height: 28px; border-radius: 8px;
   border: 2px solid var(--muted); background: none; display: grid; place-items: center;
 }
+.tick::after { content: ''; position: absolute; inset: -10px; } /* 48px touch target */
+.error-card h2 { font-size: 18px; margin-bottom: 6px; }
 .tick.on { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
 .add-row { color: var(--muted); }
 .bare { flex: 1; min-width: 0; min-height: 40px; border: 0; background: none; outline: none; }

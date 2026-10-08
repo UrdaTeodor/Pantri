@@ -199,7 +199,10 @@ export function ScanScreen({ route }) {
           audio: false,
           video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
         });
-        if (stopped) return;
+        if (stopped) {
+          stream.getTracks().forEach(t => t.stop()); // closed while the camera was starting
+          return;
+        }
         const v = video.current;
         v.srcObject = stream;
         await v.play();

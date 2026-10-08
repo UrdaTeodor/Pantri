@@ -23,7 +23,7 @@ const FIXTURES = path.join(ROOT, 'tools', 'fixtures');
 const BASE = '/Pantri/';
 const FIXTURE_DIR = '__check__/';
 const EAN = '5449000000996';
-const QR_TEXT = 'https://urdateodor.github.io/Pantri/#/scan?code=5449000000996';
+const QR_TEXT = 'https://example.com/Pantri/#/scan?code=5449000000996';
 const PROBE_URL = 'https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.3/package.json';
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 

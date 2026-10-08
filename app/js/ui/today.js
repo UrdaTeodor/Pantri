@@ -4,7 +4,7 @@ import { html, useState, useMemo } from './lib.js';
 import { navigate, goTab, showToast } from './nav.js';
 import { useApp, Header, Icon, Thumb, Stepper, placeText, SiteBar, siteContext } from './kit.js';
 import { doCount, openWaste, openBatch, openCount, undoToast } from './sheets.js';
-import { todayLists, reorderList, isOfficeOpen, addDays, startOfDay, DAY } from '../model.js';
+import { todayLists, reorderList, isOpen, addDays, startOfDay, DAY } from '../model.js';
 import { longDate, dayText, qtyText, expiryText, fmtNum } from '../format.js';
 import { snooze, useUpBatch } from '../store.js';
 
@@ -91,20 +91,21 @@ function SoonRow({ x }) {
 function Welcome() {
   return html`
     <div class="card welcome">
-      <h2>Welcome to Office Pantry</h2>
+      <h2>Welcome to Pantri</h2>
       <ol>
-        <li>
-          <b>Set your office days and hours.</b> Usage is only counted while the office is open, so weekends don't "use up" stock.
-          <button class="link-btn inline" onClick=${() => navigate('#/settings')}>Settings</button>
-        </li>
-        <li>
-          <b>Arrange your locations</b> however you like — e.g. Office › Kitchen › Fridge. Several buildings or flats?
-          Add each as a top-level site (Office, Corp House, …) and get reminders per site.
-          <button class="link-btn inline" onClick=${() => navigate('#/locations')}>Locations</button>
-        </li>
         <li>
           <b>Scan your first item</b> with the round button below. Unknown barcodes are looked up online.
           Give it a usage rate ("5 per day") and the app will tell you when to check on it.
+        </li>
+        <li>
+          <b>Arrange your locations</b> however you like — e.g. Kitchen › Fridge › Door. Keeping stock in more than one
+          place? Add each as a top-level site and get reminders per site.
+          <button class="link-btn inline" onClick=${() => navigate('#/locations')}>Locations</button>
+        </li>
+        <li>
+          <b>Optional:</b> if stock is only used at certain times (an office, a shop), set opening hours so the time in
+          between doesn't count. Everything else has sensible defaults.
+          <button class="link-btn inline" onClick=${() => navigate('#/settings')}>Settings</button>
         </li>
       </ol>
     </div>`;
@@ -131,10 +132,10 @@ function StaleRow({ i }) {
   return html`
     <div class="row">
       <${Thumb} p=${p} />
-      <span class="row-main" onClick=${() => navigate(`#/product/${p.id}`)}>
+      <button class="row-main bare-btn" onClick=${() => navigate(`#/product/${p.id}`)}>
         <span class="row-title">${p.name}</span>
         <span class="row-sub">Last checked ${dayText(p.touchedAt || p.createdAt, now)} · ${qtyText(i.est.total, p.unit, i.est.rate > 0)}</span>
-      </span>
+      </button>
       <button class="btn small" onClick=${() => openCount(p)}>Count</button>
     </div>`;
 }
@@ -182,10 +183,12 @@ export function Today() {
   const [showStale, setShowStale] = useState(false);
   const toOrder = reorder.need.length + state.shopping.filter(x => !x.done).length;
   const quiet = isQuiet(lists);
-  const open = isOfficeOpen(now, settings);
-  const where = site ? site.name : multi ? 'all sites' : 'office';
+  // Open/closed only means something when opening hours are in use (globally or for the chosen site).
+  const status = settings.hoursOn && !(multi && !site)
+    ? ` · ${site ? `${site.name} ` : ''}${isOpen(now, settings) ? 'open' : 'closed, usage paused'}`
+    : '';
   return html`
-    <${Header} title="Today" sub=${`${longDate(now)}${multi && !site ? '' : ` · ${where} ${open ? 'open' : 'closed, usage paused'}`}`}
+    <${Header} title="Today" sub=${`${longDate(now)}${status}`}
       actions=${html`<button class="icon-btn" aria-label="Restock: scan a delivery" title="Restock"
         onClick=${() => navigate('#/scan?mode=restock')}><${Icon} name="truck" /></button>`} />
     <main class="page">

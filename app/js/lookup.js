@@ -45,23 +45,41 @@ export async function lookupProduct(code, { timeout = 7000 } = {}) {
   return null;
 }
 
+// Words in Open Food Facts category tags -> which of the user's categories they suggest.
 const HINTS = [
-  [/coffee|tea|infusion/, /coffee|tea/i],
-  [/milk|dair|yogurt|yoghurt|cheese|butter|cream/, /dairy|fridge/i],
-  [/water|beverage|drink|juice|soda/, /drink/i],
-  [/snack|chip|crisp|biscuit|cookie|chocolate|candy|confection|cereal-bar|nut/, /snack/i],
-  [/fruit/, /fruit/i],
-  [/clean|detergent|dishwash|soap|disinfect/, /clean/i],
-  [/paper|tissue|napkin|towel|cup|plate/, /paper|dispos/i],
+  [['coffee', 'coffees', 'tea', 'teas', 'infusion', 'infusions', 'espresso'], /coffee|tea/i],
+  [['milk', 'milks', 'dairy', 'dairies', 'yogurt', 'yogurts', 'yoghurt', 'yoghurts', 'cheese', 'cheeses', 'butter', 'butters', 'cream', 'creams'], /dairy|fridge/i],
+  [['water', 'waters', 'beverage', 'beverages', 'drink', 'drinks', 'juice', 'juices', 'soda', 'sodas', 'colas'], /drink/i],
+  [['snack', 'snacks', 'chips', 'crisps', 'biscuit', 'biscuits', 'cookie', 'cookies', 'chocolate', 'chocolates', 'candy', 'candies', 'confectioneries', 'bars', 'nuts', 'crackers'], /snack/i],
+  [['fruit', 'fruits', 'apples', 'bananas'], /fruit/i],
+  [['detergent', 'detergents', 'cleaner', 'cleaners', 'dishwashing', 'soap', 'soaps', 'disinfectants'], /clean/i],
+  [['paper', 'papers', 'tissues', 'napkins', 'towels', 'cups', 'plates'], /paper|dispos/i],
 ];
+const UMBRELLA = /and-beverages|beverages-and|foods-and|-and-their-products/;
 
-/** Pick one of the user's categories from Open Food Facts category tags, if any obviously fits. */
+/**
+ * Pick one of the user's categories from Open Food Facts category tags. Tags run from general to
+ * specific, so the most specific tag wins, and its last word (the noun: "milk-chocolates") counts first.
+ */
 export function guessCategory(tags, categories) {
-  const t = (tags || []).join(' ');
-  for (const [re, name] of HINTS) {
-    if (re.test(t)) {
-      const c = categories.find(c => name.test(c.name));
-      if (c) return c.id;
+  const list = (tags || []).map(t => String(t).replace(/^[a-z]{2}:/, '')).filter(t => !UMBRELLA.test(t)).reverse();
+  const pick = word => {
+    for (const [words, name] of HINTS) {
+      if (words.includes(word)) {
+        const c = categories.find(x => name.test(x.name));
+        if (c) return c.id;
+      }
+    }
+    return null;
+  };
+  for (const tag of list) {
+    const hit = pick(tag.split('-').pop());
+    if (hit) return hit;
+  }
+  for (const tag of list) {
+    for (const word of tag.split('-')) {
+      const hit = pick(word);
+      if (hit) return hit;
     }
   }
   return null;

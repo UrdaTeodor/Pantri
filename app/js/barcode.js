@@ -1,4 +1,4 @@
-// Barcode detection for Office Pantry.
+// Barcode detection for Pantri.
 //
 //   import { createDetector } from './barcode.js';
 //   const detector = await createDetector();       // { kind: 'native' | 'zxing', formats, detect }

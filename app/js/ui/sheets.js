@@ -16,7 +16,7 @@ export const undoToast = text => showToast(text, { action: undoAction, timeout: 
 export function doCount(p, qty) {
   const sug = count(p.id, qty);
   const text = qty === 0
-    ? `${p.name}: marked as gone${p.reorder !== false ? ' — added to the reorder list' : ''}`
+    ? `${p.name}: marked as gone${p.orderedAt ? ' (already on order)' : p.reorder !== false ? ' — added to the reorder list' : ''}`
     : `${p.name}: ${qtyText(qty, p.unit)} counted`;
   if (sug) {
     const was = p.rate ? ` (set: ${fmtNum(p.rate.qty)})` : '';
@@ -62,8 +62,10 @@ export function AddStockForm({ p, units = 1, expiry = null, expiryNote = '', sub
     <button class="btn primary block" onClick=${submit}>${submitLabel || `Add ${qtyText(qty, p.unit)}`}</button>`;
 }
 
+const startQty = (i, qty) => (i.est.rate > 0 ? Math.round(qty) : Math.round(qty * 100) / 100);
+
 export function CountForm({ p, i, onDone }) {
-  const [n, setN] = useState(Math.round(i.est.total));
+  const [n, setN] = useState(startQty(i, i.est.total));
   const done = qty => {
     doCount(p, qty);
     onDone();
@@ -86,7 +88,8 @@ export function CountForm({ p, i, onDone }) {
 const REASONS = [['expired', 'Expired'], ['spoiled', 'Spoiled / damaged'], ['other', 'Other']];
 
 export function WasteForm({ p, row, onDone }) {
-  const [n, setN] = useState(Math.max(1, Math.round(row.qty)));
+  const whole = Math.round(row.qty);
+  const [n, setN] = useState(whole >= 1 ? whole : Math.round(row.qty * 100) / 100);
   const [reason, setReason] = useState(row.expired ? 'expired' : 'spoiled');
   const submit = () => {
     wasteBatch(row.batch.id, n, reason);
@@ -96,7 +99,7 @@ export function WasteForm({ p, row, onDone }) {
   return html`
     <div class="field">
       <label>How many did you throw away?</label>
-      <${Stepper} value=${n} onChange=${setN} min=${1} />
+      <${Stepper} value=${n} onChange=${setN} min=${0.01} />
     </div>
     <div class="field">
       <label>Why?</label>
@@ -125,7 +128,7 @@ export function UseForm({ p, onDone }) {
 
 function BatchForm({ p, row, onDone }) {
   const { state, now } = useApp();
-  const shown = Math.round(row.qty);
+  const shown = Math.round(row.qty * 100) / 100;
   const [qty, setQty] = useState(shown);
   const [exp, setExp] = useState(row.batch.expiry);
   const [loc, setLoc] = useState(row.batch.locationId);

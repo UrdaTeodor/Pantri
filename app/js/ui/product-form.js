@@ -6,7 +6,7 @@ import { useApp, Header, Icon, Stepper, ExpiryPicker, LocationSelect, CategorySe
 import { createProduct, updateProduct, addBarcode, addCategory, requestPersistenceOnce } from '../store.js';
 import { lookupProduct, guessCategory } from '../lookup.js';
 import { findAllByCode, siteOf } from '../model.js';
-import { plural, PER_LABEL } from '../format.js';
+import { plural, PER_LABEL, parseNum } from '../format.js';
 
 const UNITS = ['pcs', 'bottle', 'can', 'bag', 'box', 'pack', 'carton', 'jar', 'roll', 'cup', 'pod', 'kg', 'L'];
 
@@ -92,7 +92,7 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
   }, [code]);
 
   // The first barcode's pack size is the natural first-stock amount until the user picks one.
-  const firstUnits = (f.barcodes[0] && Number(f.barcodes[0].units)) || 1;
+  const firstUnits = (f.barcodes[0] && Math.round(parseNum(f.barcodes[0].units))) || 1;
   const initialQty = initial.touched ? initial.qty : firstUnits;
 
   const setBarcode = (k, patch) => upd('barcodes', f.barcodes.map((b, j) => (j === k ? { ...b, ...patch } : b)));
@@ -107,7 +107,7 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
     if (!p) return;
     const units = await promptSheet({ title: `How many ${plural(p.unit, 2)} does this barcode count as?`, value: '1', inputmode: 'numeric', ok: 'Link' });
     if (units == null) return;
-    const n = Math.max(1, Math.round(Number(units)) || 1);
+    const n = Math.max(1, Math.round(parseNum(units)) || 1);
     addBarcode(p.id, code, n);
     showToast(`Barcode linked to ${p.name}`);
     onLinked(p.id, n);
@@ -120,8 +120,19 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
       setError('Give the product a name.');
       return;
     }
+    const rateQty = parseNum(f.rateQty);
+    if (f.rateOn && !(rateQty > 0)) {
+      setError('Enter how many get used, e.g. 5 or 0.5 — or switch usage tracking off.');
+      return;
+    }
+    const minStock = f.minStock === '' ? 0 : parseNum(f.minStock);
+    const orderQty = f.orderQty === '' ? null : parseNum(f.orderQty);
+    if (!(minStock >= 0) || (orderQty !== null && !(orderQty > 0))) {
+      setError('Minimum and usual order must be numbers (or left empty).');
+      return;
+    }
     const barcodes = f.barcodes
-      .map(b => ({ code: String(b.code).trim(), units: Math.max(1, Math.round(Number(b.units)) || 1) }))
+      .map(b => ({ code: String(b.code).trim(), units: Math.max(1, Math.round(parseNum(b.units)) || 1) }))
       .filter(b => b.code);
     // A barcode belongs to one product per site (several sites can each track the same item).
     const site = siteOf(state.locations, f.locationId);
@@ -141,9 +152,9 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
       categoryId: f.categoryId,
       unit: f.unit.trim() || 'pcs',
       barcodes,
-      rate: f.rateOn && Number(f.rateQty) > 0 ? { qty: Number(f.rateQty), per: f.ratePer } : null,
-      minStock: Math.max(0, Number(f.minStock) || 0),
-      orderQty: Number(f.orderQty) > 0 ? Number(f.orderQty) : null,
+      rate: f.rateOn ? { qty: rateQty, per: f.ratePer } : null,
+      minStock,
+      orderQty,
       reorder: f.reorder,
       locationId: f.locationId,
       notes: f.notes.trim(),
@@ -179,18 +190,18 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
         </div>
       </div>
       <div class="two">
-        <div class="field"><label>Brand</label><input class="input" value=${f.brand} onInput=${e => upd('brand', e.target.value)} /></div>
-        <div class="field"><label>Size</label><input class="input" value=${f.size} onInput=${e => upd('size', e.target.value)} placeholder="500 ml" /></div>
+        <div class="field"><label for="pf-brand">Brand</label><input id="pf-brand" class="input" value=${f.brand} onInput=${e => upd('brand', e.target.value)} /></div>
+        <div class="field"><label for="pf-size">Size</label><input id="pf-size" class="input" value=${f.size} onInput=${e => upd('size', e.target.value)} placeholder="500 ml" /></div>
       </div>
       <div class="two">
         <div class="field">
-          <label>Category</label>
-          <${CategorySelect} value=${f.categoryId} onChange=${v => upd('categoryId', v)} categories=${state.categories} />
+          <label for="pf-category">Category</label>
+          <${CategorySelect} id="pf-category" value=${f.categoryId} onChange=${v => upd('categoryId', v)} categories=${state.categories} />
           <button type="button" class="link-btn" onClick=${newCategory}>+ New category</button>
         </div>
         <div class="field">
-          <label>Counted in</label>
-          <input class="input" list="units" value=${f.unit} onInput=${e => upd('unit', e.target.value)} />
+          <label for="pf-unit">Counted in</label>
+          <input id="pf-unit" class="input" list="units" value=${f.unit} onInput=${e => upd('unit', e.target.value)} />
           <datalist id="units">${UNITS.map(u => html`<option value=${u} />`)}</datalist>
         </div>
       </div>
@@ -203,26 +214,26 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
         </label>
         ${f.rateOn && html`
           <div class="rate-row">
-            <input class="input num" type="number" inputmode="decimal" min="0" step="any" value=${f.rateQty}
+            <input class="input num" type="text" inputmode="decimal" value=${f.rateQty}
               onInput=${e => upd('rateQty', e.target.value)} aria-label="Amount" />
-            <span>${plural(f.unit, Number(f.rateQty) === 1 ? 1 : 2)} per</span>
-            <select class="input" value=${f.ratePer} onChange=${e => upd('ratePer', e.target.value)}>
+            <span>${plural(f.unit, parseNum(f.rateQty) === 1 ? 1 : 2)} per</span>
+            <select class="input" value=${f.ratePer} onChange=${e => upd('ratePer', e.target.value)} aria-label="Per">
               ${Object.entries(PER_LABEL).map(([k, label]) => html`<option value=${k}>${label}</option>`)}
             </select>
           </div>
-          <p class="hint">Counted only while the office is open. When it should be running out, the app asks you to check — and learns the real pace from your counts.</p>`}
+          <p class="hint">Counted every day — or only during opening hours, if you set them in Settings. When it should be running out, the app asks you to check, and it learns the real pace from your counts.</p>`}
       </fieldset>
 
       <fieldset class="group">
         <legend>Reordering</legend>
         <div class="two">
           <div class="field">
-            <label>Minimum to keep</label>
-            <input class="input" type="number" inputmode="numeric" min="0" value=${f.minStock} onInput=${e => upd('minStock', e.target.value)} />
+            <label for="pf-min">Minimum to keep</label>
+            <input id="pf-min" class="input" type="text" inputmode="decimal" value=${f.minStock} onInput=${e => upd('minStock', e.target.value)} />
           </div>
           <div class="field">
-            <label>Usual order <small>(optional)</small></label>
-            <input class="input" type="number" inputmode="numeric" min="0" value=${f.orderQty} placeholder="auto" onInput=${e => upd('orderQty', e.target.value)} />
+            <label for="pf-order">Usual order <small>(optional)</small></label>
+            <input id="pf-order" class="input" type="text" inputmode="decimal" value=${f.orderQty} placeholder="auto" onInput=${e => upd('orderQty', e.target.value)} />
           </div>
         </div>
         <label class="switch">
@@ -237,7 +248,7 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
           <div class="barcode-row" key=${k}>
             <input class="input mono" value=${b.code} inputmode="numeric" placeholder="Barcode" aria-label="Barcode"
               onInput=${e => setBarcode(k, { code: e.target.value })} />
-            <input class="input num" type="number" min="1" inputmode="numeric" value=${b.units} aria-label="Units per scan"
+            <input class="input num" type="text" inputmode="numeric" value=${b.units} aria-label="Units per scan"
               onInput=${e => setBarcode(k, { units: e.target.value })} />
             <button type="button" class="icon-btn" aria-label="Remove barcode" onClick=${() => upd('barcodes', f.barcodes.filter((_, j) => j !== k))}>
               <${Icon} name="x" size=${18} />
@@ -248,8 +259,8 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
       </fieldset>
 
       <div class="field">
-        <label>Usual location</label>
-        <${LocationSelect} value=${f.locationId} onChange=${v => upd('locationId', v)} locations=${state.locations} />
+        <label for="pf-location">Usual location</label>
+        <${LocationSelect} id="pf-location" value=${f.locationId} onChange=${v => upd('locationId', v)} locations=${state.locations} />
       </div>
 
       ${!editing && html`
@@ -265,8 +276,8 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
         </fieldset>`}
 
       <div class="field">
-        <label>Notes</label>
-        <textarea class="input" rows="2" value=${f.notes} onInput=${e => upd('notes', e.target.value)} placeholder="Supplier, who likes it, …"></textarea>
+        <label for="pf-notes">Notes</label>
+        <textarea id="pf-notes" class="input" rows="2" value=${f.notes} onInput=${e => upd('notes', e.target.value)} placeholder="Supplier, who likes it, …"></textarea>
       </div>
 
       ${error && html`<p class="error">${error}</p>`}

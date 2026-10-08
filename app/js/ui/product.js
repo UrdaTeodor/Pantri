@@ -5,7 +5,7 @@ import { navigate, goBack, pickSheet, confirmSheet, showToast } from './nav.js';
 import { useApp, Header, Icon, Thumb, Empty, placeText, siteContext } from './kit.js';
 import { openAddStock, openCount, openUse, chooseAndWaste, openBatch, undoToast } from './sheets.js';
 import {
-  rateSuggestion, observedRate, unusedAtExpiry, wasteSummary, fromPerOfficeDay, roundNice, findAllByCode, siteOf,
+  rateSuggestion, observedRate, unusedAtExpiry, wasteSummary, fromPerDay, roundNice, findAllByCode, siteOf,
 } from '../model.js';
 import { qtyText, rateText, dayText, ago, expiryText, fmtNum, PER_LABEL, plural } from '../format.js';
 import {
@@ -27,7 +27,7 @@ function Suggestion({ p, sug }) {
       <div class="row-main">
         <b>${sug.faster ? 'Going faster than expected' : sug.faster === false ? 'Going slower than expected' : 'Usage measured'}</b>
         <span class="row-sub">
-          Your counts over ${fmtNum(roundNice(sug.days))} office days suggest ~${fmtNum(sug.qty)} per ${PER_LABEL[sug.per]}${p.rate ? ` (set: ${fmtNum(p.rate.qty)})` : ''}.
+          Your counts over ${fmtNum(roundNice(sug.days))} days suggest ~${fmtNum(sug.qty)} per ${PER_LABEL[sug.per]}${p.rate ? ` (set: ${fmtNum(p.rate.qty)})` : ''}.
         </span>
         <div class="btn-row">
           <button class="btn primary small" onClick=${() => { applyRate(p.id, { qty: sug.qty, per: sug.per }); showToast('Usage rate updated'); }}>
@@ -61,7 +61,8 @@ export function ProductPage({ route }) {
 
   let paceLine = 'Usage not tracked — stock changes only when you count, use or add.';
   if (tracked) {
-    paceLine = `Uses ${rateText(p.rate)} · ${i.out ? 'probably used up' : `runs out ~${dayText(e.runOutAt, now)}`}`;
+    const runOut = i.out ? 'probably used up' : e.runOutAt ? `runs out ~${dayText(e.runOutAt, now)}` : 'lasts for years at this pace';
+    paceLine = `Uses ${rateText(p.rate)} · ${runOut}`;
   }
 
   const more = async () => {
@@ -165,7 +166,7 @@ export function ProductPage({ route }) {
         <div class="card">
           <dl class="details">
             <dt>Usage</dt><dd>${rateText(p.rate)}</dd>
-            ${obs && html`<dt>Measured</dt><dd>~${fmtNum(roundNice(fromPerOfficeDay(obs.perOfficeDay, (p.rate && p.rate.per) || 'week', s)))} per ${PER_LABEL[(p.rate && p.rate.per) || 'week']} (from your counts)</dd>`}
+            ${obs && html`<dt>Measured</dt><dd>~${fmtNum(roundNice(fromPerDay(obs.perDay, (p.rate && p.rate.per) || 'week', s)))} per ${PER_LABEL[(p.rate && p.rate.per) || 'week']} (from your counts)</dd>`}
             <dt>Reorder</dt><dd>${p.reorder === false ? 'off' : `when ${p.minStock > 0 ? `≤ ${fmtNum(p.minStock)}` : 'out'}${tracked ? ' or running out soon' : ''}`}${p.orderQty ? ` · usually ${qtyText(p.orderQty, p.unit)}` : ''}</dd>
             <dt>Location</dt><dd>${placeText(state, p.locationId)}</dd>
             <dt>Barcodes</dt><dd>${p.barcodes.length ? p.barcodes.map(b => html`<div>${b.code}${b.units > 1 ? ` · ${b.units} ${plural(p.unit, b.units)}` : ''}</div>`) : 'none'}</dd>

@@ -80,6 +80,13 @@ try {
   await page.locator('.welcome').waitFor();
   log('first run shows the welcome card');
 
+  // Optional setting: count usage only during opening hours (Mon–Fri 09:00–18:00 when switched on).
+  await page.goto(`${server.url}#/settings`);
+  await page.getByLabel('Only count usage during opening hours').check();
+  await page.locator('.field:has(> label:text-is("Opening days")) .chip-btn.on').first().waitFor();
+  assert.deepEqual(await page.locator('.field:has(> label:text-is("Opening days")) .chip-btn.on').allTextContents(), ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
+  log('opening hours switched on in Settings (Mon–Fri 09:00–18:00)');
+
   await addProduct(page, { name: 'Still water 0.5 L', unit: 'bottle', rate: [5, 'day'], min: 6, qty: 24, expiry: '2027-10-01', place: 'Kitchen › Fridge' });
   assert.equal(await text(page.locator('.stock-qty')), '~24 bottles');
   await shot(page, 'product-water');
@@ -123,7 +130,7 @@ try {
   const milk = page.locator('.check-card:has-text("Milk 1.5%")');
   await milk.locator('.stepper input').fill('1');
   await milk.locator('button[aria-label^="Save:"]').click();
-  assert.match(await text(page.locator('.toast')), /Your counts suggest ~0\.76 per office day \(set: 1\)/);
+  assert.match(await text(page.locator('.toast')), /Your counts suggest ~0\.76 per day \(set: 1\)/);
   await shot(page, 'rate-suggestion-toast');
   await page.locator('.toast button').click();
   assert.match(await text(page.locator('.toast')), /Usage rate updated/);
@@ -145,7 +152,7 @@ try {
   assert.match(await text(page.locator('.row:has-text("Still water")')), /Out of stock.*Order ~31 bottles/);
   assert.match(await text(page.locator('.row:has-text("Paprika chips")')), /Low: ~1 left, minimum 1.*Order ~1 bag/);
   assert.match(await text(page.locator('.row:has-text("Yogurt")')), /Out of stock.*Order ~1 cup/);
-  log('reorder: water 31 bottles (5/day × 5 office days + min 6), chips 1, yogurt 1');
+  log('reorder: water 31 bottles (5/day × 5 opening days + min 6), chips 1, yogurt 1');
   await page.locator('input[placeholder^="Add an item"]').fill('Birthday cake for Friday');
   await page.locator('input[placeholder^="Add an item"]').press('Enter');
   await page.locator('button[aria-label="Mark Still water 0.5 L as ordered"]').click();

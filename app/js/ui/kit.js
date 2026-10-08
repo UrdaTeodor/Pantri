@@ -1,9 +1,9 @@
 // Shared UI pieces: icons, thumbnails, steppers, pickers, headers, product rows.
 
-import { html, useState, createContext, useContext } from './lib.js';
+import { html, useState, createContext, useContext, focusOnMount } from './lib.js';
 import { goBack } from './nav.js';
 import { addDays, startOfDay, ymd, locationTree, locationPath, sitesOf, siteOf, siteSettings } from '../model.js';
-import { expiryText, qtyText, expiryShort } from '../format.js';
+import { expiryText, qtyText, expiryShort, parseNum, fmtInput } from '../format.js';
 import { setCurrentSite } from '../store.js';
 
 export const AppCtx = createContext(null);
@@ -51,13 +51,7 @@ export function Icon({ name, size = 22 }) {
     dangerouslySetInnerHTML=${{ __html: ICONS[name] || '' }}></svg>`;
 }
 
-/** Callback ref that focuses an element once it is mounted (autofocus doesn't fire for inserted nodes). */
-export const focusOnMount = el => {
-  if (el && !el.dataset.focused) {
-    el.dataset.focused = '1';
-    setTimeout(() => el.focus(), 60);
-  }
-};
+export { focusOnMount };
 
 const hue = s => [...(s || '?')].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % 360;
 
@@ -91,14 +85,14 @@ export function Stepper({ value, onChange, min = 0, step = 1, label = 'Quantity'
       <button type="button" class="step" onClick=${() => set(value - step)} disabled=${value <= min} aria-label="Fewer">
         <${Icon} name="minus" />
       </button>
-      <input type="number" inputmode="decimal" min=${min} value=${value} aria-label=${label}
+      <input type="text" inputmode="decimal" value=${fmtInput(value)} aria-label=${label}
         onFocus=${e => e.target.select()}
         onInput=${e => {
-          const v = parseFloat(e.target.value);
-          if (!Number.isNaN(v)) set(v);
+          const v = parseNum(e.target.value);
+          if (Number.isFinite(v)) set(v);
         }}
         onBlur=${e => {
-          if (e.target.value === '') e.target.value = value;
+          if (!Number.isFinite(parseNum(e.target.value))) e.target.value = fmtInput(value);
         }} />
       <button type="button" class="step" onClick=${() => set(value + step)} aria-label="More"><${Icon} name="plus" /></button>
     </div>`;
@@ -136,11 +130,11 @@ export function ExpiryPicker({ value, onChange, product = null, now, note = '' }
 }
 
 /** Location picker. `within` (a site id) limits it to that site's places. */
-export function LocationSelect({ value, onChange, locations, within = null, none = '— No location —' }) {
+export function LocationSelect({ id, value, onChange, locations, within = null, none = '— No location —' }) {
   const single = sitesOf(locations).length < 2;
   const tree = locationTree(locations).filter(t => !within || siteOf(locations, t.loc.id) === within);
   return html`
-    <select class="input" value=${value || ''} onChange=${e => onChange(e.target.value || null)}>
+    <select id=${id} class="input" value=${value || ''} onChange=${e => onChange(e.target.value || null)}>
       ${!within && html`<option value="">${none}</option>`}
       ${tree.map(t => html`<option value=${t.loc.id}>${single || within ? stripSite(t.path) : t.path}</option>`)}
     </select>`;
@@ -158,7 +152,7 @@ export function siteContext(state) {
   return { sites, multi, siteId: site ? site.id : null, site, settings: siteSettings(state.settings, site) };
 }
 
-/** "All sites | Office | Corp House | …" — only shown when there are at least two sites. */
+/** "All sites | Site A | Site B | …" — only shown when there are at least two sites. */
 export function SiteBar() {
   const { state } = useApp();
   const { sites, multi, siteId } = siteContext(state);
@@ -168,10 +162,10 @@ export function SiteBar() {
   return html`<div class="site-bar" role="group" aria-label="Site">${chip(null, 'All sites')}${sites.map(x => chip(x.id, x.name))}</div>`;
 }
 
-export function CategorySelect({ value, onChange, categories }) {
+export function CategorySelect({ id, value, onChange, categories }) {
   const sorted = [...categories].sort((a, b) => a.order - b.order);
   return html`
-    <select class="input" value=${value || ''} onChange=${e => onChange(e.target.value || null)}>
+    <select id=${id} class="input" value=${value || ''} onChange=${e => onChange(e.target.value || null)}>
       <option value="">— No category —</option>
       ${sorted.map(c => html`<option value=${c.id}>${c.name}</option>`)}
     </select>`;

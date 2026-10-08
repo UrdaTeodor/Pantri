@@ -1,4 +1,4 @@
-/* Office Pantry service worker.
+/* Pantri service worker.
  *
  * Two modes, selected by the stamp block below:
  *  - dev (VERSION === '__BUILD__', as committed): same-origin GETs are network-first with a

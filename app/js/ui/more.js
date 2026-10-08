@@ -14,8 +14,8 @@ import {
 import { isPersisted, requestPersistence } from '../db.js';
 
 const LINKS = [
-  ['settings', 'sliders', 'Office hours & settings', 'Office days, closures, warnings, order cycle'],
-  ['locations', 'pin', 'Locations & sites', 'Sites (Office, Corp House…), rooms, fridges, shelves'],
+  ['settings', 'sliders', 'Settings', 'Opening hours, closures, reminders, scanning'],
+  ['locations', 'pin', 'Locations & sites', 'Sites, rooms, fridges, shelves'],
   ['categories', 'tag', 'Categories', 'Drinks, snacks, cleaning…'],
   ['waste', 'trash', 'Waste report', 'What got thrown away, and what to buy less of'],
   ['backup', 'shield', 'Backup & restore', 'Save your pantry to a file'],
@@ -53,7 +53,7 @@ export function More() {
             <${Icon} name="chevron" />
           </button>`)}
       </div>
-      <p class="muted center small">Office Pantry${version ? ` · version ${version}` : ''} · your data stays on this phone</p>
+      <p class="muted center small">Pantri${version ? ` · version ${version}` : ''} · your data stays on this phone</p>
     </main>`;
 }
 
@@ -61,14 +61,38 @@ export function More() {
 
 const DAYS = [[1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [0, 'Sun']];
 
-/** "Mon–Fri 09:00–18:00", "every day, all day", … */
+/** "Mon–Fri 09:00–18:00", "every day, all day", … (opening hours off = every day, all day). */
 function scheduleText(s) {
+  if (s.hoursOn === false) return 'every day, all day';
   const set = new Set(s.workdays);
   const days = set.size === 7 ? 'every day'
     : [1, 2, 3, 4, 5].every(d => set.has(d)) && set.size === 5 ? 'Mon–Fri'
       : DAYS.filter(([d]) => set.has(d)).map(([, l]) => l).join(', ');
   const allDay = s.dayEnd <= s.dayStart;
   return `${days}${allDay ? ', all day' : ` ${s.dayStart}–${s.dayEnd}`}`;
+}
+
+/** A reminder that can be switched off (stored as 0) or set to a number of days. */
+function ToggleDays({ label, unit, hint, value, fallback, max, onSave }) {
+  const on = value > 0;
+  return html`
+    <div class="setting">
+      <label class="switch">
+        <input type="checkbox" checked=${on} onChange=${e => onSave(e.target.checked ? fallback : 0)} />
+        <span>${label}</span>
+      </label>
+      ${on && html`
+        <div class="inline-num">
+          <input class="input num" type="number" inputmode="numeric" min="1" max=${max} value=${value} aria-label=${`${label} (${unit})`}
+            onChange=${e => {
+              const v = Math.round(Number(e.target.value));
+              if (Number.isFinite(v) && v >= 1 && v <= max) onSave(v);
+              else e.target.value = value;
+            }} />
+          <span class="muted">${unit}</span>
+        </div>
+        ${hint && html`<p class="hint">${hint}</p>`}`}
+    </div>`;
 }
 
 function SiteSchedule({ site, settings, close }) {
@@ -89,11 +113,11 @@ function SiteSchedule({ site, settings, close }) {
   };
   return html`
     <div class="sheet-pad">
-      <h2>${site.name}: when is it in use?</h2>
-      <p class="muted">Usage estimates for this site only count during these hours.</p>
+      <h2>${site.name}: opening hours</h2>
+      <p class="muted">Usage at this site is only counted during these days and hours.</p>
       <label class="switch">
         <input type="checkbox" checked=${!custom} onChange=${e => setCustom(!e.target.checked)} />
-        <span>Same as the default office hours (${scheduleText(settings)})</span>
+        <span>Same as the default (${scheduleText(settings)})</span>
       </label>
       ${custom && html`
         <div class="field">
@@ -112,7 +136,7 @@ function SiteSchedule({ site, settings, close }) {
         </button>
         <label class="switch">
           <input type="checkbox" checked=${holidays} onChange=${e => setHolidays(e.target.checked)} />
-          <span>Office closures (holidays) apply here too</span>
+          <span>The closures in Settings apply here too</span>
         </label>`}
       <button class="btn primary block" onClick=${save}>Save</button>
     </div>`;
@@ -141,7 +165,7 @@ export function Settings() {
 
   const toggleDay = d => {
     const next = s.workdays.includes(d) ? s.workdays.filter(x => x !== d) : [...s.workdays, d];
-    if (!next.length) return showToast('Keep at least one office day');
+    if (!next.length) return showToast('Keep at least one opening day');
     updateSettings({ workdays: next.sort() });
   };
   const addClosed = e => {
@@ -161,28 +185,36 @@ export function Settings() {
     <${Header} title="Settings" back="#/more" />
     <main class="page">
       <section class="section">
-        <h2 class="section-title">${multi ? 'Default office hours' : 'Office hours'}</h2>
+        <h2 class="section-title">${multi ? 'Default opening hours' : 'Opening hours'}</h2>
         <div class="card pad">
+          <label class="switch">
+            <input type="checkbox" checked=${s.hoursOn} onChange=${e => updateSettings({ hoursOn: e.target.checked })} />
+            <span>Only count usage during opening hours</span>
+          </label>
           <p class="hint">
-            Usage rates only count while the office is open, so evenings, weekends and holidays don't "use up" stock.
-            ${multi && ' A site can have its own hours: Locations & sites → tap the site.'}
+            ${s.hoursOn
+              ? 'Usage rates only count on these days and hours, so evenings and days off don\'t "use up" stock.'
+              : 'Off: usage is counted every day, around the clock. Turn it on for a place that is only used at certain times, like an office or a shop.'}
+            ${multi ? ' A site can also have its own hours: Locations & sites → tap the site.' : ''}
           </p>
-          <div class="field">
-            <label>Office days</label>
-            <div class="chips">
-              ${DAYS.map(([d, label]) => html`
-                <button type="button" class=${`chip-btn${s.workdays.includes(d) ? ' on' : ''}`} aria-pressed=${s.workdays.includes(d)} onClick=${() => toggleDay(d)}>${label}</button>`)}
+          ${s.hoursOn && html`
+            <div class="field">
+              <label>Opening days</label>
+              <div class="chips">
+                ${DAYS.map(([d, label]) => html`
+                  <button type="button" class=${`chip-btn${s.workdays.includes(d) ? ' on' : ''}`} aria-pressed=${s.workdays.includes(d)} onClick=${() => toggleDay(d)}>${label}</button>`)}
+              </div>
             </div>
-          </div>
-          <div class="two">
-            <div class="field"><label>Opens</label><input class="input" type="time" value=${s.dayStart} onChange=${e => e.target.value && updateSettings({ dayStart: e.target.value })} /></div>
-            <div class="field"><label>Closes</label><input class="input" type="time" value=${s.dayEnd} onChange=${e => e.target.value && updateSettings({ dayEnd: e.target.value })} /></div>
-          </div>
+            <div class="two">
+              <div class="field"><label>Opens</label><input class="input" type="time" value=${s.dayStart} onChange=${e => e.target.value && updateSettings({ dayStart: e.target.value })} /></div>
+              <div class="field"><label>Closes</label><input class="input" type="time" value=${s.dayEnd} onChange=${e => e.target.value && updateSettings({ dayEnd: e.target.value })} /></div>
+            </div>`}
         </div>
       </section>
 
       <section class="section">
-        <h2 class="section-title">Office closed (holidays)</h2>
+        <h2 class="section-title">Closures</h2>
+        <p class="section-hint">Optional: holidays or shutdowns when nothing gets used. Usage pauses on these dates.</p>
         <div class="card list">
           ${closed.map(c => html`
             <div class="row" key=${c.from + c.to}>
@@ -197,7 +229,7 @@ export function Settings() {
               <div class="field"><label>From</label><input class="input" type="date" value=${from} onInput=${e => setFrom(e.target.value)} /></div>
               <div class="field"><label>To</label><input class="input" type="date" value=${to} min=${from} onInput=${e => setTo(e.target.value)} /></div>
             </div>
-            <div class="field"><input class="input" placeholder="Note (optional), e.g. Christmas" value=${note} onInput=${e => setNote(e.target.value)} /></div>
+            <div class="field"><input class="input" placeholder="Note (optional), e.g. Holidays" value=${note} onInput=${e => setNote(e.target.value)} /></div>
             <button class="btn block" disabled=${!from}>Add closure</button>
           </form>
         </div>
@@ -206,12 +238,12 @@ export function Settings() {
       <section class="section">
         <h2 class="section-title">Reminders</h2>
         <div class="card pad">
-          <${NumberSetting} label="Warn about expiry (days before)" value=${s.warnDays} min=${0} max=${90}
-            hint="Items appear under “Use soon” this many days before their date." onSave=${v => updateSettings({ warnDays: v })} />
-          <${NumberSetting} label="I order every … days" value=${s.orderEveryDays} min=${1} max=${90}
-            hint="The reorder list includes anything that will run out within this many days, and suggests enough to last until the next order." onSave=${v => updateSettings({ orderEveryDays: v })} />
-          <${NumberSetting} label="Re-check untouched items after … days" value=${s.staleDays} min=${0} max=${365}
-            hint="0 turns this off." onSave=${v => updateSettings({ staleDays: v })} />
+          <${ToggleDays} label="Warn before expiry dates" unit="days before" value=${s.warnDays} fallback=${7} max=${90}
+            hint="Items show under “Use soon” this many days before their date." onSave=${v => updateSettings({ warnDays: v })} />
+          <${ToggleDays} label="Remind me to re-check untouched items" unit="days without a count" value=${s.staleDays} fallback=${30} max=${365}
+            hint="Lists items nobody has counted, added or used for this long." onSave=${v => updateSettings({ staleDays: v })} />
+          <${NumberSetting} label="Plan reorders for the next … days" value=${s.orderEveryDays} min=${1} max=${90}
+            hint="The reorder list includes anything that will run out within this many days and suggests enough to last that long — set it to how often you shop." onSave=${v => updateSettings({ orderEveryDays: v })} />
         </div>
       </section>
 
@@ -244,8 +276,8 @@ export function Locations() {
   const add = async (parentId = null) => {
     const parent = parentId && state.locations.find(l => l.id === parentId);
     const name = await promptSheet({
-      title: parent ? `New place inside ${parent.name}` : 'New site (building, flat…)',
-      placeholder: parent ? 'e.g. Top shelf' : 'e.g. Corp House',
+      title: parent ? `New place inside ${parent.name}` : 'New site (another building, branch, home…)',
+      placeholder: parent ? 'e.g. Top shelf' : 'e.g. Warehouse',
     });
     if (name) addLocation(name, parentId);
   };
@@ -295,8 +327,9 @@ export function Locations() {
     <${Header} title="Locations & sites" back="#/more" />
     <main class="page">
       <p class="section-hint">
-        Top-level locations are <b>sites</b> — e.g. Office, Corp House, Vlad's apt. Each site gets its own stock, reminders and
-        reorder list. Inside a site, organise rooms, fridges and shelves as deep as you like. Tap a location for options.
+        Top-level locations are <b>sites</b>. One is enough for a single place; add more for separate buildings, branches or
+        homes, and each gets its own stock, reminders and reorder list. Inside a site, organise rooms, fridges and shelves as
+        deep as you like. Tap a location for options.
       </p>
       ${tree.length ? html`
         <div class="card list">
@@ -426,7 +459,7 @@ export function Backup() {
     isPersisted().then(setPersisted);
   }, []);
   const last = state.meta.lastBackupAt;
-  const name = `office-pantry-backup-${ymd(now)}`;
+  const name = `pantri-backup-${ymd(now)}`;
 
   const save = () => {
     download(`${name}.json`, exportJson(), 'application/json');
@@ -436,7 +469,7 @@ export function Backup() {
   const share = async () => {
     const f = new File([exportJson()], `${name}.txt`, { type: 'text/plain' });
     try {
-      await navigator.share({ files: [f], title: 'Office Pantry backup' });
+      await navigator.share({ files: [f], title: 'Pantri backup' });
       markBackedUp();
     } catch (e) {
       if (e.name !== 'AbortError') showToast('Sharing failed — use “Save backup file” instead');
@@ -513,7 +546,7 @@ export function Help() {
     <${Header} title="How it works" back="#/more" />
     <main class="page prose">
       <h2>Usage rates and checks</h2>
-      <p>Give a product a usage rate — "5 per office day" for water, "1 per week" for a bag of chips. From the last count, the app estimates what's left, counting time only while the office is open (Settings → office days, hours and closures).</p>
+      <p>Give a product a usage rate — "5 per day" for water, "1 per week" for a bag of chips. From the last count, the app estimates what's left. By default it counts every day, around the clock; if a place is only used at certain times, switch on opening hours in Settings (and add closures such as holidays) so the time in between doesn't count.</p>
       <p>When the estimate says something is gone or below its minimum, it shows up under <b>Check these</b> on the Today screen. Tap <b>Gone</b>, or set how many are left and tap ✓. "Ask me tomorrow" snoozes it for a day.</p>
       <p>Each count is compared with the estimate. If the real pace is clearly different, the app suggests a better rate — you decide whether to use it.</p>
 
@@ -526,12 +559,12 @@ export function Help() {
       <p><b>Restock</b> (truck icon on Today) keeps the camera open, so you can scan a whole delivery in one go.</p>
 
       <h2>Reorder list</h2>
-      <p>Lists anything out, at or below its minimum, or running out before your next order (Settings → "I order every … days"). The suggested amount covers usage until the next order plus the minimum, rounded up to whole packs where it helps. Tick an item when ordered; adding stock clears it.</p>
+      <p>Lists anything out, only expired, at or below its minimum, or running out within the next few days (Settings → "Plan reorders for the next … days"). The suggested amount covers usage for that period plus the minimum, rounded up to whole packs where it helps. Tick an item when ordered; adding stock clears it.</p>
 
       <h2>Several sites</h2>
-      <p>Top-level locations are sites — e.g. Office, Corp House and Vlad's apt. Each site keeps its own stock, usage rate, reminders and reorder list for a product, so water drunk at the office doesn't use up the water at the flat.</p>
+      <p>Top-level locations are sites — for example two buildings, or a shop and its storeroom across town. Each site keeps its own stock, usage rate, reminders and reorder list for a product, so what's used at one site doesn't use up the stock at another.</p>
       <p>With two or more sites, chips at the top of Today, Pantry and Reorder switch between <b>All sites</b> (reminders grouped per site) and a single site. Scanning uses the site you picked. If a barcode is only tracked at another site, one tap starts tracking it here too.</p>
-      <p>Each site can have its own opening hours — Locations & sites → tap the site. For a flat, "every day, all day" is usually right.</p>
+      <p>Each site can have its own opening hours — Locations & sites → tap the site.</p>
 
       <h2>Your data</h2>
       <p>Everything stays on this phone — nothing is uploaded except barcode lookups. Save a backup file regularly (More → Backup & restore).</p>

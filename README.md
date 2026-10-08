@@ -1,13 +1,16 @@
-# Office Pantry
+# Pantri
 
-A phone app for running an office pantry. Scan barcodes to track stock, expiry dates and reorders, and let it tell you what to check.
+A phone app for keeping a pantry stocked: an office kitchen, a shared flat, a café storeroom, or several places at once. Scan barcodes to track stock, expiry dates and reorders, and let it tell you what to check.
 
 - **Scan** a barcode. The first time, it looks the product up on Open Food Facts. After that, one scan adds stock, counts it or logs waste. Multipacks count correctly: scanning a 6-pack adds 6 bottles.
 - **Organise it your way** with nested locations (Kitchen › Fridge › Door, Storage › Shelf B) and categories.
-- **Expiry dates per delivery.** Every restock is its own batch, so new milk never hides the old carton. It warns you before items expire, including stock that *won't be used in time* at the current pace.
-- **Usage rates and checks.** Set "water: 5 per office day" or "chips: 1 per week". The app estimates what's left, counting only office hours and days and skipping the holidays you enter. When something should be gone or low, the Today screen asks you to check it. Your counts teach it the real pace.
-- **Reorder list.** It collects anything that's out, below its minimum, or will run out before your next order, and suggests how much to buy. Share it as text.
-- **Waste log.** Thrown-out items are logged, and it flags what you're over-buying.
+- **Expiry dates per delivery.** Every restock is its own batch, so new stock never hides older stock. It warns you before items expire, including stock that *won't be used in time* at the current pace.
+- **Usage rates and checks.** Set "water: 5 per day" or "chips: 1 per week". The app estimates what's left, and when something should be gone or low, the Today screen asks you to check it. Your counts teach it the real pace.
+- **Several sites.** Top-level locations are sites. Each site keeps its own stock and reminders, and the Today screen groups reminders per site.
+- **Reorder list.** It collects anything that's out, only expired, below its minimum, or will run out soon, and suggests how much to buy. Share it as text.
+- **Waste log.** Thrown-out items are logged, and it flags what is being over-bought.
+
+Everything has sensible defaults and the rest is optional. By default, usage counts every day, around the clock. Opening days and hours, closures (holidays) and per-site hours are only needed for places that aren't always in use.
 
 It's an installable web app (PWA), not a store app. It works offline. All data stays on your phone, and the only thing sent anywhere is a barcode when it's looked up online.
 
@@ -27,9 +30,9 @@ When a new version is published, the app shows "A new version of the app is read
 
 ## First steps
 
-1. **More → Office hours & settings:** set your office days and hours, and any closures (holidays). Usage estimates pause outside these.
-2. **More → Locations:** shape your storage. Tap a location to rename, move, or add places inside it.
-3. **Scan** your products. Give the ones that get used regularly a usage rate and a minimum to keep.
+1. **Scan** your products. Give the ones that get used regularly a usage rate and a minimum to keep.
+2. **More → Locations & sites:** shape your storage. Keeping stock in more than one place? Add each place as a site.
+3. **Optional, More → Settings:** opening hours, closures and reminder windows, if the defaults don't fit.
 4. **More → Backup & restore:** save a backup file now and then. This is the only copy outside the phone.
 
 ## Development
@@ -48,7 +51,7 @@ npm run deploy        # publish the committed app/ to GitHub Pages (gh-pages bra
 
 | Path | What |
 | --- | --- |
-| `app/js/model.js` | Pure logic: office-time maths, estimates, checks, reorder, rate learning |
+| `app/js/model.js` | Pure logic: usage time, estimates, checks, reorder, rate learning, sites |
 | `app/js/store.js` | State, actions, persistence (IndexedDB) |
 | `app/js/ui/` | Screens and components |
 | `app/js/barcode.js` | Camera barcode detection (native `BarcodeDetector` or ZXing) |

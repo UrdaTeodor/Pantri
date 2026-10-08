@@ -15,7 +15,7 @@ function reasonText(x, now) {
     case 'out': return 'Out of stock';
     case 'probably-out': return 'Probably out (not checked yet)';
     case 'expired': return 'Only expired stock left';
-    case 'low': return `Low: ~${fmtNum(Math.round(e.total))} left, minimum ${fmtNum(p.minStock)}`;
+    case 'low': return `Low: ~${fmtNum(Math.round((x.usable != null ? x.usable : e.total) * 100) / 100)} left, minimum ${fmtNum(p.minStock)}`;
     case 'soon': return `Runs out ~${dayText(e.runOutAt, now)}`;
     default: return '';
   }
@@ -34,7 +34,7 @@ function bySite(items, sites) {
   return groups.filter(g => g.items.length);
 }
 
-export function shareText(groups, shopping, now, title = 'Office reorder') {
+export function shareText(groups, shopping, now, title = 'Reorder list') {
   const lines = [`${title} — ${longDate(now)}`];
   for (const g of groups) {
     if (g.name) lines.push('', `${g.name}:`);
@@ -54,11 +54,11 @@ function NeedRow({ x, now, options }) {
         setOrdered(p.id, true);
         showToast(`${p.name} marked as ordered`, { action: { label: 'Undo', fn: () => setOrdered(p.id, false) } });
       }}></button>
-      <span class="row-main" onClick=${() => navigate(`#/product/${p.id}`)}>
+      <button class="row-main bare-btn" onClick=${() => navigate(`#/product/${p.id}`)}>
         <span class="row-title">${p.name}</span>
         <span class=${`row-sub${x.reason === 'out' || x.reason === 'expired' ? ' danger-text' : ''}`}>${reasonText(x, now)}</span>
         <span class="row-sub strong">Order ~${amountText(x)}</span>
-      </span>
+      </button>
       <button class="icon-btn" aria-label="Options" onClick=${() => options(x)}><${Icon} name="dots" /></button>
     </div>`;
 }
@@ -75,9 +75,9 @@ export function Reorder() {
   const nothing = !r.need.length && !r.ordered.length && !state.shopping.length;
 
   const share = async () => {
-    const body = shareText(needGroups, state.shopping, now, site ? `${site.name} reorder` : 'Office reorder');
+    const body = shareText(needGroups, state.shopping, now, site ? `${site.name} reorder list` : 'Reorder list');
     try {
-      if (navigator.share) await navigator.share({ title: 'Office reorder', text: body });
+      if (navigator.share) await navigator.share({ title: 'Reorder list', text: body });
       else {
         await navigator.clipboard.writeText(body);
         showToast('List copied — paste it into an email or chat');

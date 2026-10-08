@@ -1,16 +1,22 @@
 // Hash routing, bottom sheets and toasts.
 // Sheets push a history entry, so the phone's back gesture closes the sheet instead of leaving the page.
 
-import { html, useReducer, useEffect } from './lib.js';
+import { html, useReducer, useLayoutEffect, focusOnMount } from './lib.js';
 
 const listeners = new Set();
-const notify = () => listeners.forEach(f => f());
+let version = 0;
+const notify = () => {
+  version++;
+  listeners.forEach(f => f());
+};
 
 /** Re-render the calling component whenever the route, sheets or toast change. */
 export function useNav() {
   const [, force] = useReducer(x => x + 1, 0);
-  useEffect(() => {
+  const seen = version;
+  useLayoutEffect(() => {
     listeners.add(force);
+    if (version !== seen) force(); // changed between the first render and subscribing (e.g. back at startup)
     return () => listeners.delete(force);
   }, []);
 }
@@ -61,6 +67,8 @@ export function goTab(name) {
 
 let sheets = [];
 let seq = 0;
+// History entries outlive a reload (or an app update), sheets don't: tag entries with this page load.
+const LOAD = Math.random().toString(36).slice(2);
 export const currentSheets = () => sheets;
 
 /** Show a bottom sheet. `render(close)` returns its content; close(result) resolves the returned promise. */
@@ -68,7 +76,7 @@ export function ask(render, { full = false } = {}) {
   return new Promise(resolve => {
     const id = ++seq;
     sheets = [...sheets, { id, render, full, resolve, result: undefined, closing: false }];
-    history.pushState({ depth: depth() + 1, sheet: id }, '', location.hash || '#/');
+    history.pushState({ depth: depth() + 1, sheet: id, load: LOAD }, '', location.hash || '#/');
     notify();
   });
 }
@@ -87,9 +95,15 @@ export function closeSheet(result) {
 }
 
 addEventListener('popstate', e => {
-  const sheetId = (e.state && e.state.sheet) || 0;
+  // An entry from an earlier page load can't hold any of today's sheets.
+  const sheetId = (e.state && e.state.load === LOAD && e.state.sheet) || 0;
   const closed = [];
-  while (sheets.length && sheets[sheets.length - 1].id > sheetId) closed.push(sheets[sheets.length - 1]), (sheets = sheets.slice(0, -1));
+  while (sheets.length) {
+    const top = sheets[sheets.length - 1];
+    if (!(top.id > sheetId || top.closing)) break;
+    closed.push(top);
+    sheets = sheets.slice(0, -1);
+  }
   route = parseRoute();
   if (pendingHome) {
     pendingHome = false;
@@ -100,7 +114,8 @@ addEventListener('popstate', e => {
   backWaiters.splice(0).forEach(r => r());
 });
 
-if (!history.state) history.replaceState({ depth: 0 }, '', location.href);
+// A sheet open at reload time is gone now: drop its marker so back/close keep working.
+if (!history.state || history.state.sheet) history.replaceState({ depth: (history.state && history.state.depth) || 0 }, '', location.href);
 
 // ---------- toasts ----------
 
@@ -143,7 +158,7 @@ export function promptSheet({ title, value = '', placeholder = '', ok = 'Save', 
     return html`
       <form class="sheet-pad" onSubmit=${submit}>
         <h2>${title}</h2>
-        <input name="v" class="input" value=${value} placeholder=${placeholder} inputmode=${inputmode} autofocus />
+        <input name="v" class="input" value=${value} placeholder=${placeholder} inputmode=${inputmode} ref=${focusOnMount} aria-label=${title} />
         <div class="btn-row">
           <button type="button" class="btn" onClick=${() => close(null)}>Cancel</button>
           <button class="btn primary">${ok}</button>

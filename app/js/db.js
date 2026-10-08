@@ -1,5 +1,6 @@
 // Persistence: the whole state is one IndexedDB record (falls back to localStorage if IndexedDB fails).
 
+// Storage names predate the "Pantri" name; changing them would hide existing data, so they stay.
 const DB_NAME = 'office-pantry';
 const STORE = 'kv';
 const KEY = 'state';
@@ -28,15 +29,22 @@ async function run(mode, fn) {
   });
 }
 
+const revOf = s => (s && s.meta && s.meta.rev) || 0;
+
 export async function load() {
+  let idb = null;
+  let local = null;
   try {
-    const value = await run('readonly', s => s.get(KEY));
-    if (value) return value;
+    idb = (await run('readonly', s => s.get(KEY))) || null;
   } catch (e) {
     console.warn('IndexedDB unavailable, using localStorage', e);
   }
-  const raw = localStorage.getItem(LS_KEY);
-  return raw ? JSON.parse(raw) : null;
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    local = raw ? JSON.parse(raw) : null;
+  } catch { /* no localStorage */ }
+  // A save may have fallen back to localStorage after IndexedDB failed: use the newer copy.
+  return revOf(local) > revOf(idb) ? local : idb || local;
 }
 
 export async function save(state) {

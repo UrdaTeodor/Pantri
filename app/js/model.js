@@ -1,8 +1,9 @@
 // Pure pantry logic — no DOM, no storage. Every function takes `now` (ms) so it can be tested.
 //
 // Stock model: a product has batches (qty + expiry + location). Quantities on batches are what was
-// recorded at `product.anchorAt`; usage since then is estimated from the product's rate, counted only
-// during office hours, and taken from the earliest-expiring batch first (FIFO).
+// recorded at `product.anchorAt`; usage since then is estimated from the product's rate and taken from
+// the earliest-expiring batch first (FIFO). Usage counts every day, around the clock, unless opening
+// hours are switched on (globally or for a site); it never counts on closure days.
 
 import { codeKey } from './codes.js';
 
@@ -12,12 +13,13 @@ export const PRESENT = 0.5;
 
 export function defaultSettings() {
   return {
-    workdays: [1, 2, 3, 4, 5], // Date#getDay(): 0 = Sunday
+    hoursOn: false, // count usage only during the opening days/hours below (off = every day, all day)
+    workdays: [1, 2, 3, 4, 5], // opening days, used when hoursOn — Date#getDay(): 0 = Sunday
     dayStart: '09:00',
     dayEnd: '18:00',
-    closed: [], // office closed: [{ from: 'YYYY-MM-DD', to: 'YYYY-MM-DD', note }]
-    warnDays: 7, // "use soon" window before the printed date
-    orderEveryDays: 7, // reorder list looks this far ahead
+    closed: [], // closures (no usage at all): [{ from: 'YYYY-MM-DD', to: 'YYYY-MM-DD', note }]
+    warnDays: 7, // "use soon" window before the printed date (0 = off)
+    orderEveryDays: 7, // the reorder list looks this far ahead and orders enough to cover it
     staleDays: 30, // nudge to re-check items untouched this long (0 = off)
     lookup: true, // look up unknown barcodes online
     scanSound: true,
@@ -54,18 +56,25 @@ export function expiresAt(expiry) {
   return addDays(parseYmd(expiry), 1);
 }
 
-// ---------- office time ----------
+// ---------- usage time ----------
+
+const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6];
+
+/** The schedule in force: the opening days/hours when switched on, otherwise every day, all day. */
+export function schedule(s) {
+  return s.hoursOn ? s : { ...s, workdays: EVERY_DAY, dayStart: '00:00', dayEnd: '00:00' };
+}
 
 function minutesOf(hm) {
   const [h, m] = String(hm || '').split(':').map(Number);
   return (h || 0) * 60 + (m || 0);
 }
-function officeHours(s) {
+function openHours(s) {
   const a = minutesOf(s.dayStart);
   const b = minutesOf(s.dayEnd);
   return b > a ? [a, b] : [0, 24 * 60];
 }
-function isOfficeDay(d, s) {
+function isOpenDay(d, s) {
   if (!s.workdays.includes(d.getDay())) return false;
   if (!s.closed || !s.closed.length) return true;
   const key = ymd(d);
@@ -79,15 +88,16 @@ function windowOf(day, [a, b]) {
   return [ws.getTime(), we.getTime()];
 }
 
-/** Office days (fractional) elapsed between two instants. A full office day counts as 1. */
-export function officeTime(from, to, s) {
+/** Days of use (fractional) between two instants: a whole day — or a whole opening window — counts as 1. */
+export function usageTime(from, to, settings) {
   if (!(to > from)) return 0;
-  const hours = officeHours(s);
+  const s = schedule(settings);
+  const hours = openHours(s);
   let total = 0;
   const d = new Date(from);
   d.setHours(0, 0, 0, 0);
   while (d.getTime() < to) {
-    if (isOfficeDay(d, s)) {
+    if (isOpenDay(d, s)) {
       const [ws, we] = windowOf(d, hours);
       const lo = Math.max(ws, from);
       const hi = Math.min(we, to);
@@ -98,15 +108,16 @@ export function officeTime(from, to, s) {
   return total;
 }
 
-/** The instant when `days` office days will have elapsed after `from` (Infinity if never). */
-export function addOfficeTime(from, days, s) {
+/** The instant when `days` days of use will have passed after `from` (Infinity if never). */
+export function addUsageTime(from, days, settings) {
   if (!(days > 0)) return from;
-  const hours = officeHours(s);
+  const s = schedule(settings);
+  const hours = openHours(s);
   let left = days;
   const d = new Date(from);
   d.setHours(0, 0, 0, 0);
   for (let i = 0; i < 4000; i++) {
-    if (isOfficeDay(d, s)) {
+    if (isOpenDay(d, s)) {
       const [ws, we] = windowOf(d, hours);
       const lo = Math.max(ws, from);
       if (we > lo) {
@@ -120,27 +131,29 @@ export function addOfficeTime(from, days, s) {
   return Infinity;
 }
 
-export function isOfficeOpen(now, s) {
+/** Is it within opening hours right now (always true without opening hours, except on closure days)? */
+export function isOpen(now, settings) {
+  const s = schedule(settings);
   const d = new Date(now);
   d.setHours(0, 0, 0, 0);
-  if (!isOfficeDay(d, s)) return false;
-  const [ws, we] = windowOf(d, officeHours(s));
+  if (!isOpenDay(d, s)) return false;
+  const [ws, we] = windowOf(d, openHours(s));
   return now >= ws && now < we;
 }
 
 // ---------- rates ----------
 
-/** Usage rate ({ qty, per: 'day' | 'week' | 'month' }) as units per office day. 'day' means office day. */
-export function ratePerOfficeDay(rate, s) {
+/** Usage rate ({ qty, per: 'day' | 'week' | 'month' }) as units per day of use (per opening day, if set). */
+export function ratePerDay(rate, s) {
   const q = Number(rate && rate.qty);
   if (!(q > 0)) return 0;
-  const perWeek = s.workdays.length || 5;
+  const perWeek = schedule(s).workdays.length || 7;
   if (rate.per === 'week') return q / perWeek;
   if (rate.per === 'month') return (q * 12) / (52 * perWeek);
   return q;
 }
-export function fromPerOfficeDay(r, per, s) {
-  const perWeek = s.workdays.length || 5;
+export function fromPerDay(r, per, s) {
+  const perWeek = schedule(s).workdays.length || 7;
   if (per === 'week') return r * perWeek;
   if (per === 'month') return (r * 52 * perWeek) / 12;
   return r;
@@ -152,8 +165,8 @@ export function roundNice(n) {
 }
 
 // ---------- sites ----------
-// Top-level locations are sites (e.g. Office, Corp House, Vlad's apt). Each product belongs to the site of
-// its usual location; a site may override the office days/hours used for usage estimates.
+// Top-level locations are sites (separate buildings, flats, branches…). Each product belongs to the site
+// of its usual location; a site may have its own opening days/hours for usage estimates.
 
 /** Top-level locations (sites), in display order. */
 export function sitesOf(locations) {
@@ -169,12 +182,13 @@ export function siteOf(locations, id) {
   return l ? l.id : null;
 }
 
-/** Settings with a site's own schedule applied (days, hours, whether office closures apply). */
+/** Settings with a site's own opening hours applied (days, hours, whether the closures apply there). */
 export function siteSettings(settings, site) {
   const sch = site && site.schedule;
   if (!sch) return settings;
   return {
     ...settings,
+    hoursOn: true,
     workdays: sch.workdays && sch.workdays.length ? sch.workdays : settings.workdays,
     dayStart: sch.dayStart || settings.dayStart,
     dayEnd: sch.dayEnd || settings.dayEnd,
@@ -191,6 +205,8 @@ export function productSettings(state, p) {
 
 // ---------- stock estimates ----------
 
+const finite = t => (Number.isFinite(t) ? t : null);
+
 /** Batches in the order they get used: earliest expiry first (no date last), then oldest. */
 export function fifo(batches) {
   return [...batches].sort(
@@ -201,9 +217,9 @@ export function fifo(batches) {
 /** Estimated stock now. `per` lists each batch (FIFO order) with its estimated remaining qty. */
 export function estimate(p, batches, s, now) {
   const list = fifo(batches);
-  const rate = ratePerOfficeDay(p.rate, s);
+  const rate = ratePerDay(p.rate, s);
   const recorded = list.reduce((t, b) => t + b.qty, 0);
-  const consumed = rate > 0 ? rate * officeTime(p.anchorAt, now, s) : 0;
+  const consumed = rate > 0 ? rate * usageTime(p.anchorAt, now, s) : 0;
   let left = consumed;
   const per = list.map(batch => {
     const used = Math.min(batch.qty, left);
@@ -215,7 +231,7 @@ export function estimate(p, batches, s, now) {
     recorded,
     total: Math.max(0, recorded - consumed),
     per,
-    runOutAt: rate > 0 && recorded > 0 ? addOfficeTime(p.anchorAt, recorded / rate, s) : null,
+    runOutAt: rate > 0 && recorded > 0 ? finite(addUsageTime(p.anchorAt, recorded / rate, s)) : null,
   };
 }
 
@@ -227,7 +243,7 @@ export function unusedAtExpiry(p, est, batch, s) {
     if (r.batch === batch) break;
     ahead += r.batch.qty;
   }
-  const usedBy = est.rate * officeTime(p.anchorAt, expiresAt(batch.expiry), s);
+  const usedBy = est.rate * usageTime(p.anchorAt, expiresAt(batch.expiry), s);
   return Math.min(batch.qty, Math.max(0, batch.qty - Math.max(0, usedBy - ahead)));
 }
 
@@ -237,6 +253,11 @@ export function lastWasCount(p) {
 }
 
 const LOOKAHEAD_DAYS = 30; // how far ahead "won't be used in time" warnings reach
+
+/** Printed date within the warning window ("7 days before" includes the item dated 7 days from today). */
+function withinWarning(expiry, now, s) {
+  return s.warnDays > 0 && daysUntil(parseYmd(expiry), now) <= s.warnDays;
+}
 
 /** Per-product view of the pantry at `now`: Map(productId → info). */
 export function analyze(state, now) {
@@ -255,9 +276,11 @@ export function analyze(state, now) {
     const siteId = siteIdOf(p.locationId);
     const s = siteSettings(g, siteId && locs.get(siteId));
     const est = estimate(p, byProduct.get(p.id), s, now);
+    // Estimated stock rounds: under half a unit is "none left". Counted stock (no usage rate) is exact.
+    const threshold = est.rate > 0 ? PRESENT : 1e-6;
     const batches = est.per.map(({ batch, qty }) => {
       const row = {
-        batch, qty, present: qty >= PRESENT, expiresAt: null, expired: false, unused: null,
+        batch, qty, present: qty >= threshold, expiresAt: null, expired: false, unused: null,
         siteId: siteIdOf(batch.locationId) || siteId,
       };
       if (batch.expiry) {
@@ -275,12 +298,13 @@ export function analyze(state, now) {
       product: p,
       siteId,
       settings: s,
+      threshold,
       est,
       batches,
-      out: est.total < PRESENT,
-      low: est.total >= PRESENT && p.minStock > 0 && est.total <= p.minStock,
+      out: est.total < threshold,
+      low: est.total >= threshold && p.minStock > 0 && est.total <= p.minStock,
       expired: present.some(b => b.expired),
-      soon: present.some(b => !b.expired && b.expiresAt && b.expiresAt - now <= s.warnDays * DAY),
+      soon: present.some(b => !b.expired && b.expiresAt && withinWarning(b.batch.expiry, now, g)),
       nextExpiry: firstDated ? firstDated.batch.expiry : null,
     });
   }
@@ -330,7 +354,7 @@ export function todayLists(info, s, now, site = null) {
     for (const b of i.batches) {
       if (!b.present || !b.expiresAt || !inSite(b.siteId, site)) continue;
       if (b.expired) expired.push({ i, b });
-      else if (b.expiresAt - now <= s.warnDays * DAY || b.unused >= PRESENT) soon.push({ i, b });
+      else if (withinWarning(b.batch.expiry, now, s) || (s.warnDays > 0 && b.unused >= PRESENT)) soon.push({ i, b });
     }
     if (
       mine && !checking && !snoozed && s.staleDays > 0 && !i.out &&
@@ -353,7 +377,7 @@ export function todayLists(info, s, now, site = null) {
 export function suggestOrder(p, e, s, now) {
   let units;
   if (p.orderQty > 0) units = p.orderQty;
-  else if (e.rate > 0) units = e.rate * officeTime(now, addDays(now, s.orderEveryDays), s) + (p.minStock || 0) - e.total;
+  else if (e.rate > 0) units = e.rate * usageTime(now, addDays(now, s.orderEveryDays), s) + (p.minStock || 0) - e.total;
   else units = (p.minStock || 0) + 1 - e.total;
   units = Math.max(1, Math.ceil(units - 1e-9));
   const pack = Math.max(1, ...(p.barcodes || []).map(b => b.units || 1));
@@ -377,12 +401,13 @@ export function reorderList(info, s, now, site = null) {
     // Expired stock is still on the shelf (until thrown away) but can't be used: don't count it.
     const expired = i.batches.reduce((t, b) => t + (b.present && b.expired ? b.qty : 0), 0);
     const usable = Math.max(0, e.total - expired);
+    const threshold = i.threshold || PRESENT;
     let reason = null;
-    if (i.out) reason = e.recorded >= PRESENT ? 'probably-out' : 'out';
-    else if (usable < PRESENT) reason = 'expired';
+    if (i.out) reason = e.recorded >= PRESENT && e.rate > 0 ? 'probably-out' : 'out';
+    else if (usable < threshold) reason = 'expired';
     else if (p.minStock > 0 && usable <= p.minStock) reason = 'low';
     else if (e.runOutAt != null && e.runOutAt <= horizon) reason = 'soon';
-    if (reason) need.push({ i, reason, qty: suggestOrder(p, { ...e, total: usable }, ps, now) });
+    if (reason) need.push({ i, reason, usable, qty: suggestOrder(p, { ...e, total: usable }, ps, now) });
   }
   const rank = { out: 0, 'probably-out': 1, expired: 2, low: 3, soon: 4 };
   need.sort((a, b) => rank[a.reason] - rank[b.reason] || a.i.product.name.localeCompare(b.i.product.name));
@@ -394,7 +419,7 @@ export function reorderList(info, s, now, site = null) {
 
 /**
  * Usage observed between the last few counts: (previous count + added − wasted ± adjusted − this count)
- * divided by office days in between. `ranOut` means the latest count was 0, so usage may have been higher.
+ * divided by the days of use in between. `ranOut` means the latest count was 0, so usage may have been higher.
  */
 export function observedRate(events, productId, s) {
   const evs = events.filter(e => e.productId === productId).sort((a, b) => a.at - b.at);
@@ -403,37 +428,40 @@ export function observedRate(events, productId, s) {
   let delta = 0;
   for (const e of evs) {
     if (e.type === 'count') {
-      if (cp) spans.push({ used: cp.qty + delta - e.qty, days: officeTime(cp.at, e.at, s), endQty: e.qty });
+      if (cp) spans.push({ used: cp.qty + delta - e.qty, days: usageTime(cp.at, e.at, s), endQty: e.qty });
       cp = { at: e.at, qty: e.qty };
       delta = 0;
     } else if (e.type === 'add' && !e.initial) delta += e.qty;
     else if (e.type === 'waste') delta -= e.qty;
-    else if (e.type === 'adjust') delta += e.qty;
+    else if (e.type === 'adjust') {
+      cp = null; // a corrected quantity: start measuring again from the next count
+      delta = 0;
+    }
   }
   const recent = spans.filter(x => x.days >= 0.25 && x.used >= 0).slice(-3);
   const days = recent.reduce((t, x) => t + x.days, 0);
   if (days < 1) return null;
   const used = recent.reduce((t, x) => t + x.used, 0);
-  return { perOfficeDay: used / days, days, ranOut: recent[recent.length - 1].endQty === 0 };
+  return { perDay: used / days, days, ranOut: recent[recent.length - 1].endQty === 0 };
 }
 
 /** A better usage rate to propose after counting, or null when the current one is close enough. */
 export function rateSuggestion(p, events, s) {
   if (p.rateHintAt && p.countedAt && p.rateHintAt >= p.countedAt) return null; // dismissed for this count
   const obs = observedRate(events, p.id, s);
-  if (!obs || !(obs.perOfficeDay > 0)) return null;
-  const cur = ratePerOfficeDay(p.rate, s);
+  if (!obs || !(obs.perDay > 0)) return null;
+  const cur = ratePerDay(p.rate, s);
   if (cur > 0) {
-    const ratio = obs.perOfficeDay / cur;
+    const ratio = obs.perDay / cur;
     if (ratio >= 0.8 && ratio <= 1.25) return null;
     if (ratio < 1 && obs.ranOut) return null; // ran out: real usage could be higher still
   }
-  const perWeek = s.workdays.length || 5;
+  const perWeek = schedule(s).workdays.length || 7;
   const per = cur > 0 ? p.rate.per
-    : obs.perOfficeDay >= 1 ? 'day' : obs.perOfficeDay * perWeek >= 1 ? 'week' : 'month';
-  const qty = roundNice(fromPerOfficeDay(obs.perOfficeDay, per, s));
+    : obs.perDay >= 1 ? 'day' : obs.perDay * perWeek >= 1 ? 'week' : 'month';
+  const qty = roundNice(fromPerDay(obs.perDay, per, s));
   if (!(qty > 0) || (cur > 0 && qty === Number(p.rate.qty))) return null;
-  return { qty, per, days: obs.days, faster: cur > 0 ? obs.perOfficeDay > cur : null };
+  return { qty, per, days: obs.days, faster: cur > 0 ? obs.perDay > cur : null };
 }
 
 // ---------- waste ----------

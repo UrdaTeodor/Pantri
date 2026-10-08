@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  defaultSettings, officeTime, addOfficeTime, ratePerOfficeDay, estimate, analyze, todayLists,
+  defaultSettings, usageTime, addUsageTime, ratePerDay, estimate, analyze, todayLists,
   reorderList, observedRate, rateSuggestion, wasteSummary, findByCode, locationTree, locationPath,
-  unusedAtExpiry, isOfficeOpen, DAY,
+  unusedAtExpiry, isOpen, DAY,
 } from '../app/js/model.js';
 import { codeKey, parseGs1, interpretScan, lookupVariants } from '../app/js/codes.js';
 import * as store from '../app/js/store.js';
@@ -12,39 +12,40 @@ import * as store from '../app/js/store.js';
 // Week of Monday 12 Oct 2026 (local time; no DST change that week).
 const at = (day, h = 9, m = 0) => new Date(2026, 9, day, h, m).getTime();
 const MON = 12, TUE = 13, WED = 14, THU = 15, FRI = 16, SAT = 17;
-const S = defaultSettings();
+// Most tests use opening hours Mon–Fri 09:00–18:00 (switched on); defaults are tested separately.
+const S = { ...defaultSettings(), hoursOn: true };
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
 
-test('office time counts only office hours on office days', () => {
-  near(officeTime(at(MON, 9), at(MON, 18), S), 1);
-  near(officeTime(at(MON, 13, 30), at(TUE, 13, 30), S), 1);
-  near(officeTime(at(FRI, 18), at(MON + 7, 9), S), 0); // weekend
-  near(officeTime(at(FRI, 9), at(MON + 7, 9), S), 1);
-  near(officeTime(at(MON, 0), at(SAT, 0), S), 5);
-  near(officeTime(at(MON, 0), at(SAT, 0), { ...S, closed: [{ from: '2026-10-14', to: '2026-10-14' }] }), 4);
-  near(officeTime(at(MON, 0), at(TUE, 0), { ...S, dayStart: '00:00', dayEnd: '00:00' }), 1);
-  assert.equal(officeTime(at(TUE), at(MON), S), 0);
+test('with opening hours on, usage time counts only opening hours on opening days', () => {
+  near(usageTime(at(MON, 9), at(MON, 18), S), 1);
+  near(usageTime(at(MON, 13, 30), at(TUE, 13, 30), S), 1);
+  near(usageTime(at(FRI, 18), at(MON + 7, 9), S), 0); // weekend
+  near(usageTime(at(FRI, 9), at(MON + 7, 9), S), 1);
+  near(usageTime(at(MON, 0), at(SAT, 0), S), 5);
+  near(usageTime(at(MON, 0), at(SAT, 0), { ...S, closed: [{ from: '2026-10-14', to: '2026-10-14' }] }), 4);
+  near(usageTime(at(MON, 0), at(TUE, 0), { ...S, dayStart: '00:00', dayEnd: '00:00' }), 1);
+  assert.equal(usageTime(at(TUE), at(MON), S), 0);
 });
 
-test('addOfficeTime is the inverse of officeTime', () => {
-  assert.equal(addOfficeTime(at(MON, 9), 2.5, S), at(WED, 13, 30));
-  assert.equal(addOfficeTime(at(FRI, 17), 0.5, S), at(MON + 7, 12, 30));
-  for (const d of [0.1, 1, 3.7, 12.25]) near(officeTime(at(TUE, 11), addOfficeTime(at(TUE, 11), d, S), S), d, 1e-6);
-  assert.equal(addOfficeTime(at(MON), 1, { ...S, workdays: [] }), Infinity);
+test('addUsageTime is the inverse of usageTime', () => {
+  assert.equal(addUsageTime(at(MON, 9), 2.5, S), at(WED, 13, 30));
+  assert.equal(addUsageTime(at(FRI, 17), 0.5, S), at(MON + 7, 12, 30));
+  for (const d of [0.1, 1, 3.7, 12.25]) near(usageTime(at(TUE, 11), addUsageTime(at(TUE, 11), d, S), S), d, 1e-6);
+  assert.equal(addUsageTime(at(MON), 1, { ...S, workdays: [] }), Infinity);
 });
 
-test('isOfficeOpen', () => {
-  assert.equal(isOfficeOpen(at(MON, 10), S), true);
-  assert.equal(isOfficeOpen(at(MON, 19), S), false);
-  assert.equal(isOfficeOpen(at(SAT, 10), S), false);
+test('isOpen', () => {
+  assert.equal(isOpen(at(MON, 10), S), true);
+  assert.equal(isOpen(at(MON, 19), S), false);
+  assert.equal(isOpen(at(SAT, 10), S), false);
 });
 
-test('rates convert to units per office day', () => {
-  assert.equal(ratePerOfficeDay({ qty: 5, per: 'day' }, S), 5);
-  near(ratePerOfficeDay({ qty: 1, per: 'week' }, S), 0.2);
-  near(ratePerOfficeDay({ qty: 260 / 12, per: 'month' }, S), 1);
-  assert.equal(ratePerOfficeDay(null, S), 0);
-  assert.equal(ratePerOfficeDay({ qty: 0, per: 'day' }, S), 0);
+test('rates convert to units per day of use', () => {
+  assert.equal(ratePerDay({ qty: 5, per: 'day' }, S), 5);
+  near(ratePerDay({ qty: 1, per: 'week' }, S), 0.2);
+  near(ratePerDay({ qty: 260 / 12, per: 'month' }, S), 1);
+  assert.equal(ratePerDay(null, S), 0);
+  assert.equal(ratePerDay({ qty: 0, per: 'day' }, S), 0);
 });
 
 const product = (over = {}) => ({
@@ -57,10 +58,10 @@ const batch = (id, qty, expiry, addedAt = at(MON, 9)) => ({ id, productId: 'p1',
 test('estimate uses the earliest-expiring batch first', () => {
   const p = product();
   const bs = [batch('late', 6, '2026-10-30'), batch('early', 3, '2026-10-20')];
-  const e = estimate(p, bs, S, at(WED, 9)); // 2 office days × 2 = 4 used
+  const e = estimate(p, bs, S, at(WED, 9)); // 2 open days × 2 = 4 used
   near(e.total, 5);
   assert.deepEqual(e.per.map(r => [r.batch.id, r.qty]), [['early', 0], ['late', 5]]);
-  assert.equal(e.runOutAt, at(FRI, 13, 30)); // 9 units / 2 per day = 4.5 office days
+  assert.equal(e.runOutAt, at(FRI, 13, 30)); // 9 units / 2 per day = 4.5 open days
 });
 
 test('unused-at-expiry predicts waste', () => {
@@ -86,7 +87,7 @@ test('checks: probably-gone until counted, low only when not verified low', () =
   assert.deepEqual(l.checks.map(c => c.kind), ['low']);
   l = todayLists(analyze(state, at(MON + 7, 12)), S, at(MON + 7, 12)); // 26.67 used → gone
   assert.deepEqual(l.checks.map(c => c.kind), ['gone']);
-  assert.equal(l.checks[0].since, at(FRI, 16, 12)); // 24/5 = 4.8 office days after Mon 9:00
+  assert.equal(l.checks[0].since, at(FRI, 16, 12)); // 24/5 = 4.8 open days after Mon 9:00
   // Snoozed → hidden
   const snoozed = { ...state, products: [{ ...water, snoozeUntil: at(MON + 8, 0) }] };
   assert.equal(todayLists(analyze(snoozed, at(MON + 7, 12)), S, at(MON + 7, 12)).checks.length, 0);
@@ -96,7 +97,7 @@ test('checks: probably-gone until counted, low only when not verified low', () =
   assert.equal(todayLists(info, S, at(MON + 7, 13)).checks.length, 0);
   const r = reorderList(info, S, at(MON + 7, 13));
   assert.equal(r.need[0].reason, 'out');
-  // 5/day × 5 office days in the next 7 days + min 6 = 31 units
+  // 5/day × 5 open days in the next 7 days + min 6 = 31 units
   assert.equal(r.need[0].qty.units, 31);
 });
 
@@ -117,8 +118,8 @@ test('no "gone?" check once a person has emptied the stock (used up / thrown awa
 test('reorder: low, runs out soon, ordered, opt-out', () => {
   const mk = (id, over) => product({ id, name: id, countedQty: 10, ...over });
   const products = [
-    mk('soon', { rate: { qty: 1, per: 'day' } }), // 10 left at 1/day → runs out in 10 office days (> 7 calendar days)
-    mk('fast', { rate: { qty: 3, per: 'day' } }), // runs out in 3.3 office days
+    mk('soon', { rate: { qty: 1, per: 'day' } }), // 10 left at 1/day → runs out in 10 open days (> 7 calendar days)
+    mk('fast', { rate: { qty: 3, per: 'day' } }), // runs out in 3.3 open days
     mk('low', { rate: null, minStock: 12 }),
     mk('ordered', { rate: null, minStock: 12, orderedAt: at(MON, 10) }),
     mk('nope', { rate: null, minStock: 12, reorder: false }),
@@ -137,9 +138,9 @@ test('learning: counts reveal a faster pace', () => {
   const evs = [
     { type: 'add', productId: 'p1', qty: 24, at: at(MON, 9), initial: true },
     { type: 'count', productId: 'p1', qty: 24, at: at(MON, 9), initial: true },
-    { type: 'count', productId: 'p1', qty: 4, at: at(WED, 9) }, // 20 used in 2 office days
+    { type: 'count', productId: 'p1', qty: 4, at: at(WED, 9) }, // 20 used in 2 open days
   ];
-  near(observedRate(evs, 'p1', S).perOfficeDay, 10);
+  near(observedRate(evs, 'p1', S).perDay, 10);
   const p = product({ rate: { qty: 5, per: 'day' }, countedAt: at(WED, 9) });
   assert.deepEqual(rateSuggestion(p, evs, S), { qty: 10, per: 'day', days: 2, faster: true });
   // within ±20–25% → no suggestion
@@ -153,14 +154,14 @@ test('learning: counts reveal a faster pace', () => {
     { type: 'waste', productId: 'p1', qty: 2, at: at(TUE, 10) },
     { type: 'count', productId: 'p1', qty: 5, at: at(THU, 9) }, // used 10+12-2-5 = 15 in 3 days
   ];
-  near(observedRate(evs2, 'p1', S).perOfficeDay, 5);
+  near(observedRate(evs2, 'p1', S).perDay, 5);
   // ran out → slower pace is not trusted
   const evs3 = [evs[1], { type: 'count', productId: 'p1', qty: 0, at: at(MON + 14, 9) }];
   assert.equal(rateSuggestion(product({ rate: { qty: 5, per: 'day' }, countedAt: at(MON + 14, 9) }), evs3, S), null);
   // no rate yet → proposes one in a sensible unit
   const evs4 = [
     { type: 'count', productId: 'p1', qty: 6, at: at(MON, 9) },
-    { type: 'count', productId: 'p1', qty: 4, at: at(MON + 14, 9) }, // 2 in 10 office days → 1/week
+    { type: 'count', productId: 'p1', qty: 4, at: at(MON + 14, 9) }, // 2 in 10 open days → 1/week
   ];
   assert.deepEqual(rateSuggestion(product({ rate: null, countedAt: at(MON + 14, 9) }), evs4, S), { qty: 1, per: 'week', days: 10, faster: null });
 });
@@ -244,7 +245,7 @@ test('store: create, add, count, use, waste, undo', () => {
   const sug = withClock(at(THU, 9), () => store.count(id, 8));
   s = store.getState();
   assert.deepEqual(s.batches.map(b => [b.expiry, b.qty]).sort(), [['2027-03-01', 2], ['2027-05-01', 6]]);
-  // Mon→Thu: 24 + 6 − 8 = 22 used in 3 office days ≈ 7.3/day vs 5 → suggestion
+  // Mon→Thu: 24 + 6 − 8 = 22 used in 3 open days ≈ 7.3/day vs 5 → suggestion
   assert.equal(sug.qty, 7.3);
   assert.equal(sug.faster, true);
 
@@ -314,15 +315,15 @@ test('store: locations delete moves children and stock up; import validates', ()
   assert.equal(s.products.find(p => p.id === id).locationId, kitchen);
   // can't move a location under its own descendant
   store.moveLocation(kitchen, door);
-  const office = store.getState().locations.find(l => l.name === 'Office').id;
-  assert.equal(store.getState().locations.find(l => l.id === kitchen).parentId, office);
+  const main = store.getState().locations.find(l => l.name === 'Main site').id;
+  assert.equal(store.getState().locations.find(l => l.id === kitchen).parentId, main);
 
   const json = store.exportJson();
   store.eraseAll();
   assert.equal(store.getState().products.length, 0);
   store.importJson(json);
   assert.equal(store.getState().products[0].name, 'Milk');
-  assert.throws(() => store.importJson('{"hello": 1}'), /not an Office Pantry backup/);
+  assert.throws(() => store.importJson('{"hello": 1}'), /not a Pantri backup/);
 });
 
 test('analyze stays fast with a realistic pantry', () => {
@@ -347,22 +348,23 @@ import { sitesOf, siteOf, siteSettings, findAllByCode as findAll } from '../app/
 
 test('sites: top-level locations, per-site hours, per-site lists', () => {
   store.resetStore(store.initialState(at(MON, 9)));
-  const office = store.getState().locations.find(l => l.name === 'Office').id;
+  store.updateSettings({ hoursOn: true }); // the main site keeps Mon–Fri opening hours
+  const main = store.getState().locations.find(l => l.name === 'Main site').id;
   const fridge = store.getState().locations.find(l => l.name === 'Fridge').id;
-  const flat = store.addLocation("Vlad's apt", null);
-  const corp = store.addLocation('Corp House', null);
+  const flat = store.addLocation('Apartment', null);
+  const warehouse = store.addLocation('Warehouse', null);
   let s = store.getState();
-  assert.deepEqual(sitesOf(s.locations).map(l => l.name), ['Office', "Vlad's apt", 'Corp House']);
-  assert.equal(siteOf(s.locations, fridge), office);
+  assert.deepEqual(sitesOf(s.locations).map(l => l.name), ['Main site', 'Apartment', 'Warehouse']);
+  assert.equal(siteOf(s.locations, fridge), main);
 
-  // The flat is used every day, all day; office closures don't apply there.
+  // The apartment is used every day, all day; the closures don't apply there.
   store.setSiteSchedule(flat, { workdays: [0, 1, 2, 3, 4, 5, 6], dayStart: '00:00', dayEnd: '00:00', holidays: false });
   s = store.getState();
   const flatSettings = siteSettings(s.settings, s.locations.find(l => l.id === flat));
-  near(officeTime(at(SAT, 0), at(MON + 7, 0), flatSettings), 2); // the weekend counts at the flat
-  near(officeTime(at(SAT, 0), at(MON + 7, 0), s.settings), 0); // …but not at the office
+  near(usageTime(at(SAT, 0), at(MON + 7, 0), flatSettings), 2); // the weekend counts at the flat
+  near(usageTime(at(SAT, 0), at(MON + 7, 0), s.settings), 0); // …but not at the main site
 
-  // Same barcode, tracked separately at the office and at the flat (1 per day each).
+  // Same barcode, tracked separately at the main site and at the apartment (1 per day each).
   const code = [{ code: '5449000000996', units: 1 }];
   const water = withClock(at(FRI, 18), () => store.createProduct({ name: 'Water', rate: { qty: 1, per: 'day' }, locationId: fridge, barcodes: code }, { qty: 10 }));
   const flatWater = withClock(at(FRI, 18), () => store.copyProductToSite(water, flat));
@@ -373,27 +375,41 @@ test('sites: top-level locations, per-site hours, per-site lists', () => {
   assert.equal(flatCopy.locationId, flat);
   assert.deepEqual(flatCopy.barcodes, code);
   const info = analyze(s, at(MON + 7, 0));
-  near(info.get(water).est.total, 10); // nothing used at the office over the weekend
-  near(info.get(flatWater).est.total, 10 - 2.25); // Fri 18:00 → Mon 00:00 at the flat = 2.25 days
+  near(info.get(water).est.total, 10); // nothing used at the main site over the weekend
+  near(info.get(flatWater).est.total, 10 - 2.25); // Fri 18:00 → Mon 00:00 at the apartment = 2.25 days
 
-  // A batch at Corp House shows up only in Corp House's lists.
-  const milk = withClock(at(FRI, 18), () => store.createProduct({ name: 'Milk', locationId: corp }, { qty: 2, expiry: '2026-10-19' }));
+  // A batch at the warehouse shows up only in the warehouse's lists.
+  const milk = withClock(at(FRI, 18), () => store.createProduct({ name: 'Milk', locationId: warehouse }, { qty: 2, expiry: '2026-10-19' }));
   s = store.getState();
   const all = analyze(s, at(MON + 7, 9));
   const names = l => l.soon.map(x => x.i.product.name).sort();
   assert.deepEqual(names(todayLists(all, s.settings, at(MON + 7, 9))), ['Milk', 'Water']);
-  assert.deepEqual(names(todayLists(all, s.settings, at(MON + 7, 9), corp)), ['Milk']);
+  assert.deepEqual(names(todayLists(all, s.settings, at(MON + 7, 9), warehouse)), ['Milk']);
   assert.deepEqual(names(todayLists(all, s.settings, at(MON + 7, 9), flat)), ['Water']);
-  assert.deepEqual(names(todayLists(all, s.settings, at(MON + 7, 9), office)), []);
-  assert.equal(all.get(milk).siteId, corp);
+  assert.deepEqual(names(todayLists(all, s.settings, at(MON + 7, 9), main)), []);
+  assert.equal(all.get(milk).siteId, warehouse);
 
-  // Only expired milk left at Corp House → it goes on the reorder list (expired stock isn't usable).
+  // Only expired milk left at the warehouse → it goes on the reorder list (expired stock isn't usable).
   const tue = at(MON + 8, 9); // milk printed Mon 19th → expired from Tue
-  const r = reorderList(analyze(s, tue), s.settings, tue, corp);
+  const r = reorderList(analyze(s, tue), s.settings, tue, warehouse);
   assert.deepEqual(r.need.map(x => [x.i.product.name, x.reason, x.qty.units]), [['Milk', 'expired', 1]]);
 
   // Changing a site's hours is not retroactive: estimates up to now are kept.
   const before = analyze(store.getState(), at(MON + 7, 9)).get(flatWater).est.total;
   withClock(at(MON + 7, 9), () => store.setSiteSchedule(flat, null));
   near(analyze(store.getState(), at(MON + 7, 9)).get(flatWater).est.total, before);
+});
+
+test('by default usage counts every day, around the clock', () => {
+  const d = defaultSettings();
+  assert.equal(d.hoursOn, false);
+  near(usageTime(at(FRI, 18), at(MON + 7, 18), d), 3); // the weekend and evenings count
+  near(ratePerDay({ qty: 7, per: 'week' }, d), 1); // a week is 7 days of use
+  assert.equal(isOpen(at(SAT, 3), d), true);
+  // Closures still pause usage.
+  near(usageTime(at(MON, 0), at(THU, 0), { ...d, closed: [{ from: '2026-10-13', to: '2026-10-13' }] }), 2);
+  // Older saved data (no hoursOn) keeps the opening hours it was set up with.
+  const old = store.migrate({ products: [], batches: [], settings: { workdays: [1, 2, 3, 4, 5], dayStart: '09:00', dayEnd: '18:00' } });
+  assert.equal(old.settings.hoursOn, true);
+  assert.equal(store.migrate({ products: [], batches: [] }).settings.hoursOn, false);
 });

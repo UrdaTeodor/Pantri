@@ -1,8 +1,8 @@
 {
   "id": "Pantri/",
-  "name": "Office Pantry",
-  "short_name": "Pantry",
-  "description": "Office pantry inventory: scan barcodes, track expiry dates, and get told what to check and what to reorder. Works offline.",
+  "name": "Pantri",
+  "short_name": "Pantri",
+  "description": "Pantry inventory: scan barcodes, track expiry dates, and get told what to check and what to reorder. Works offline.",
   "lang": "en",
   "dir": "ltr",
   "start_url": "./",

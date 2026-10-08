@@ -11,6 +11,14 @@ const time = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-di
 
 export const fmtNum = n => num.format(n);
 
+/** Parse a typed number; accepts a decimal comma ("0,5"). NaN when it isn't a number. */
+export function parseNum(v) {
+  const t = String(v == null ? '' : v).trim().replace(/\s/g, '').replace(',', '.');
+  return t === '' || !/^-?\d*\.?\d+$|^-?\d+\.$/.test(t) ? NaN : Number(t);
+}
+/** A number for an input box: no thousands separators, at most 2 decimals. */
+export const fmtInput = n => String(Math.round(n * 100) / 100);
+
 const NO_PLURAL = /^(kg|g|mg|l|ml|cl|dl|oz|lb|pcs|pc|x)$/i;
 export function plural(unit, n) {
   const u = (unit || 'pcs').trim();
@@ -21,10 +29,10 @@ export function plural(unit, n) {
   return u + 's';
 }
 
-/** "12 bottles", "~3 bags" (approx = estimated from usage). */
+/** "12 bottles", "~3 bags" (approx = estimated from usage, rounded), "0.4 kg" (exact decimals kept). */
 export function qtyText(n, unit, approx = false) {
-  const r = Math.max(0, Math.round(n));
-  return `${approx && r > 0 ? '~' : ''}${r} ${plural(unit, r)}`;
+  const r = Math.max(0, approx ? Math.round(n) : Math.round(n * 100) / 100);
+  return `${approx && r > 0 ? '~' : ''}${fmtNum(r)} ${plural(unit, r)}`;
 }
 
 export function dateText(t, now) {
@@ -68,7 +76,7 @@ export function expiryShort(expiry, now) {
   return dateText(t, now);
 }
 
-export const PER_LABEL = { day: 'office day', week: 'week', month: 'month' };
+export const PER_LABEL = { day: 'day', week: 'week', month: 'month' };
 export function rateText(rate) {
   return rate && rate.qty > 0 ? `${fmtNum(rate.qty)} per ${PER_LABEL[rate.per] || rate.per}` : 'not tracked';
 }

@@ -1,4 +1,4 @@
-// Several sites (Office, Corp House, Vlad's apt): per-site reminders, scanning, reorder grouping.
+// Several sites (Main site, Warehouse, Apartment): per-site reminders, hours, scanning, reorder grouping.
 // Usage: node tests/sites.e2e.mjs [outputDir]
 import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
@@ -33,21 +33,25 @@ try {
   await go('');
   assert.equal(await page.locator('.site-bar').count(), 0); // one site → no site switcher
 
-  // ---- add two more sites; the flat is used every day, all day ----
+  // ---- add two more sites; the warehouse is only in use on weekdays ----
   await go('#/locations');
-  for (const name of ['Corp House', "Vlad's apt"]) {
+  for (const name of ['Warehouse', 'Apartment']) {
     await page.getByRole('button', { name: 'Add a site' }).click();
     await page.locator('.sheet input[name=v]').fill(name);
     await page.locator('.sheet button:text("Save")').click();
     await page.locator('.sheet').waitFor({ state: 'detached' });
   }
-  await page.locator(".row-main:has-text(\"Vlad's apt\")").click();
+  await page.locator('.row-main:has-text("Warehouse")').click();
   await page.locator('.sheet .menu-item:has-text("Opening days & hours")').click();
-  await page.getByLabel(/Same as the default office hours/).uncheck();
-  await page.getByRole('button', { name: 'Used any time (every day, all day)' }).click();
+  await page.getByLabel(/Same as the default \(every day, all day\)/).uncheck();
+  for (const day of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']) {
+    const chip = page.locator(`.sheet .chip-btn:text-is("${day}")`);
+    const on = (await chip.getAttribute('aria-pressed')) === 'true';
+    if (on !== !['Sat', 'Sun'].includes(day)) await chip.click();
+  }
   await page.locator('.sheet button:text("Save")').click();
-  await page.locator(".row:has-text(\"Vlad's apt\") .row-sub:has-text(\"every day, all day\")").waitFor();
-  log('added sites Corp House and Vlad\'s apt; the flat is in use every day, all day');
+  await page.locator('.row:has-text("Warehouse") .row-sub:has-text("Mon–Fri 09:00–18:00")').waitFor();
+  log('added sites Warehouse and Apartment; the warehouse has its own hours (Mon–Fri 09:00–18:00)');
   await shot('locations');
 
   // ---- products at each site ----
@@ -62,80 +66,81 @@ try {
       await page.getByLabel('Track how fast it gets used').check();
       await page.getByLabel('Amount').fill(String(p.rate));
     }
-    await page.locator('.field:has(> label:text-is("Usual location")) select').selectOption({ label: p.place });
+    await page.locator('#pf-location').selectOption({ label: p.place });
     const stock = page.locator('fieldset:has(legend:text("In stock right now"))');
     await stock.locator('.stepper input').fill(String(p.qty));
     if (p.expiry) await stock.locator('input[type=date]').fill(p.expiry);
     await page.getByRole('button', { name: 'Save product' }).click();
     await page.waitForURL(/#\/product\//);
   };
-  await addProduct({ name: 'Still water 0.5 L', code: CODE, rate: 5, qty: 24, place: 'Office › Kitchen › Fridge' });
-  await addProduct({ name: 'Milk 1.5%', qty: 2, expiry: '2026-10-13', place: 'Corp House' });
-  await addProduct({ name: 'Yogurt', qty: 3, expiry: '2026-10-13', place: "Vlad's apt" });
-  log('created water at the Office, milk at Corp House, yogurt at the flat');
+  await addProduct({ name: 'Still water 0.5 L', code: CODE, rate: 5, qty: 24, place: 'Main site › Kitchen › Fridge' });
+  await addProduct({ name: 'Milk 1.5%', qty: 2, expiry: '2026-10-13', place: 'Warehouse' });
+  await addProduct({ name: 'Yogurt', qty: 3, expiry: '2026-10-13', place: 'Apartment' });
+  log('created water at the main site, milk at the warehouse, yogurt at the apartment');
 
-  // ---- scanning the office water at the flat → track it there too ----
+  // ---- scanning the main-site water at the apartment → track it there too ----
   await go('#/');
-  await page.locator(".site-bar button:text(\"Vlad's apt\")").click();
+  await page.locator('.site-bar button:text("Apartment")').click();
   await page.locator('button[aria-label="Scan a barcode"]').click();
-  assert.match(await text(page.locator('.scan-title')), /Vlad's apt/);
+  assert.match(await text(page.locator('.scan-title')), /Apartment/);
   await page.locator('.scan-top button[aria-label="Type a barcode"]').click();
   await page.locator('.sheet input[name=v]').fill(CODE);
   await page.locator('.sheet button:text("Continue")').click();
-  await page.locator(".sheet h2:text(\"Still water 0.5 L isn't tracked at Vlad's apt yet\")").waitFor();
-  await page.locator(".sheet .menu-item:has-text(\"Track it at Vlad's apt\")").click();
+  await page.locator(".sheet h2:text(\"Still water 0.5 L isn't tracked at Apartment yet\")").waitFor();
+  await page.locator('.sheet .menu-item:has-text("Track it at Apartment")').click();
   await page.locator('.sheet h2:text("Still water 0.5 L")').waitFor();
-  assert.match(await text(page.locator('.sheet .field:has-text("Where is it going?") select')), /^Vlad's apt$/);
+  assert.match(await text(page.locator('.sheet .field:has-text("Where is it going?") select')), /^Apartment$/);
   await page.locator('.sheet .stepper input').first().fill('6');
-  await page.locator('.sheet button:text("Add 6 bottles"), .sheet button:text("Add 6 pcs")').first().click();
+  await page.locator('.sheet button:text("Add 6 pcs")').click();
   await page.waitForFunction(() => !location.hash.startsWith('#/scan'));
-  log('scanned the office water at the flat → tracked separately there with 6 in stock');
+  log('scanned the main-site water at the apartment → tracked separately there with 6 in stock');
 
   // ---- per-site reminders ----
   await page.locator('.site-bar button:text("All sites")').click();
   const blocks = await page.locator('.site-block .site-title').allTextContents();
-  assert.deepEqual(blocks.map(t => t.trim()), ['Corp House', "Vlad's apt"]);
-  assert.match(await text(page.locator('.site-block:has-text("Corp House")')), /Milk 1\.5%.*expires tomorrow/);
-  assert.doesNotMatch(await text(page.locator('.site-block:has-text("Corp House")')), /Yogurt/);
-  assert.match(await text(page.locator(".site-block:has-text(\"Vlad's apt\")")), /Yogurt.*expires tomorrow/);
+  assert.deepEqual(blocks.map(t => t.trim()), ['Warehouse', 'Apartment']);
+  assert.match(await text(page.locator('.site-block:has-text("Warehouse")')), /Milk 1\.5%.*expires tomorrow/);
+  assert.doesNotMatch(await text(page.locator('.site-block:has-text("Warehouse")')), /Yogurt/);
+  assert.match(await text(page.locator('.site-block:has-text("Apartment")')), /Yogurt.*expires tomorrow/);
   log('Today (all sites): expiring items are listed per site');
   await shot('today-all');
-  await page.locator('.site-bar button:text("Corp House")').click();
+  await page.locator('.site-bar button:text("Warehouse")').click();
   assert.equal(await page.locator('.site-block').count(), 0);
   assert.match(await text(page.locator('main')), /Milk 1\.5%/);
   assert.doesNotMatch(await text(page.locator('main')), /Yogurt/);
-  log('picking Corp House shows only Corp House');
+  log('picking Warehouse shows only the warehouse');
 
   // ---- a week later: checks + expiry per site ----
   await page.clock.setFixedTime(new Date(2026, 9, 19, 12, 0));
   await page.reload();
   await page.locator('.site-bar button:text("All sites")').click();
-  const office = await text(page.locator('.site-block:has-text("Office")'));
-  const flat = await text(page.locator(".site-block:has-text(\"Vlad's apt\")"));
-  assert.match(office, /Check these.*Still water 0\.5 L/);
+  const main = await text(page.locator('.site-block:has-text("Main site")'));
+  const flat = await text(page.locator('.site-block:has-text("Apartment")'));
+  assert.match(main, /Check these.*Still water 0\.5 L/);
   assert.match(flat, /Check these.*Still water 0\.5 L/);
   assert.match(flat, /Expired.*Yogurt/);
-  assert.match(await text(page.locator('.site-block:has-text("Corp House")')), /Expired.*Milk 1\.5%/);
-  log('a week later: water checks at both Office and the flat; expired milk/yogurt under their own sites');
+  assert.match(await text(page.locator('.site-block:has-text("Warehouse")')), /Expired.*Milk 1\.5%/);
+  log('a week later: water checks at both sites that have it; expired milk/yogurt under their own sites');
   await shot('today-week-later');
 
   // ---- reorder grouped by site, shared with site headings ----
   await page.locator('.nav-item:has-text("Reorder")').click();
   await page.locator('.group-title').first().waitFor();
-  assert.deepEqual((await page.locator('.group-title').allTextContents()).map(t => t.trim()), ['Office', 'Corp House', "Vlad's apt"]);
+  assert.deepEqual((await page.locator('.group-title').allTextContents()).map(t => t.trim()), ['Main site', 'Warehouse', 'Apartment']);
   await page.locator('button[aria-label="Share list"]').click();
   const shared = await page.evaluate(() => window.__shared.text);
-  assert.match(shared, /Office:\n• Still water 0\.5 L/);
-  assert.match(shared, /Vlad's apt:\n(• .*\n)*• Still water 0\.5 L/);
-  log('reorder list and shared text are grouped by site');
+  assert.match(shared, /Main site:\n• Still water 0\.5 L/);
+  assert.match(shared, /Warehouse:\n• Milk 1\.5%/);
+  assert.match(shared, /Apartment:\n(• .*\n)*• Still water 0\.5 L/);
+  log('reorder list and shared text are grouped by site (expired-only milk included)');
   await shot('reorder');
 
-  // ---- pantry filtered to the flat ----
+  // ---- pantry filtered to the apartment ----
   await page.locator('.nav-item:has-text("Pantry")').click();
-  await page.locator(".site-bar button:text(\"Vlad's apt\")").click();
+  await page.locator('.site-bar button:text("Apartment")').click();
   const rows = await page.locator('.list .row-title').allTextContents();
   assert.deepEqual(rows.sort(), ['Still water 0.5 L', 'Yogurt']);
-  log('pantry shows only what is at the flat');
+  log('pantry shows only what is at the apartment');
 } finally {
   await browser.close();
   await server.close();
