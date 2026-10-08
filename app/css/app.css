@@ -311,6 +311,15 @@ textarea.input { resize: vertical; }
 .empty h3 { color: var(--text); font-size: 17px; }
 .empty p { max-width: 340px; }
 
+/* ---------- notifications (Settings) ---------- */
+
+.reminders .switch { margin-bottom: 2px; }
+.reminders .error { margin-top: 10px; font-size: 14px; font-weight: 500; }
+.reminder-time { margin: 12px 0 0; }
+.reminder-time .input { width: 150px; }
+.reminder-preview { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
+.reminder-preview q { color: var(--text); }
+
 /* ---------- product ---------- */
 
 .product-hero { display: flex; gap: 14px; align-items: center; margin: 2px 0 12px; }

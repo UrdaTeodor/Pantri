@@ -3,6 +3,7 @@ import { App } from './ui/app.js';
 import { showToast, navigate } from './ui/nav.js';
 import { initStore } from './store.js';
 import { initCloud } from './cloud.js';
+import { startReminderSync } from './reminders.js';
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
@@ -41,3 +42,4 @@ initCloud({
   notify: text => showToast(text, { timeout: 10000 }),
   openAccount: () => navigate('#/account', { replace: true }),
 });
+startReminderSync(); // does nothing unless the cloud features are set up (config.js)

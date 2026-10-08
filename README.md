@@ -9,10 +9,11 @@ A phone app for keeping a pantry stocked: an office kitchen, a shared flat, a ca
 - **Several sites.** Top-level locations are sites. Each site keeps its own stock and reminders, and the Today screen groups reminders per site.
 - **Reorder list.** It collects anything that's out, only expired, below its minimum, or will run out soon, and suggests how much to buy. Share it as text.
 - **Waste log.** Thrown-out items are logged, and it flags what is being over-bought.
+- **Optional account.** Sign in to keep your pantry backed up online and in sync on your phones, with earlier versions kept. Then you can also get a **daily reminder notification** about what to check, what has expired and what to use soon, on Android and on iPhone.
 
 Everything has sensible defaults and the rest is optional. By default, usage counts every day, around the clock. Opening days and hours, closures (holidays) and per-site hours are only needed for places that aren't always in use.
 
-It's an installable web app (PWA), not a store app. It works offline. All data stays on your phone, and the only thing sent anywhere is a barcode when it's looked up online.
+It's an installable web app (PWA), not a store app, and it works offline. Without an account, all data stays on your phone, and the only thing sent anywhere is a barcode when it's looked up online. With an account, your pantry is also stored online; each account only ever sees its own data.
 
 ## Install on your phone
 
@@ -24,6 +25,8 @@ It's an installable web app (PWA), not a store app. It works offline. All data s
    - iPhone: tap Share, then **Add to Home Screen**.
 3. Open it from the new icon. Allow the camera the first time you scan.
 
+On iPhone and iPad, notifications only work in the app added to the Home Screen (iOS/iPadOS 16.4 or newer). No App Store or developer account is involved.
+
 Long-press the icon on Android for shortcuts: *Scan item*, *Restock* and *Reorder list*.
 
 When a new version is published, the app shows "A new version of the app is ready". Tap **Update**.
@@ -33,7 +36,8 @@ When a new version is published, the app shows "A new version of the app is read
 1. **Scan** your products. Give the ones that get used regularly a usage rate and a minimum to keep.
 2. **More → Locations & sites:** shape your storage. Keeping stock in more than one place? Add each place as a site.
 3. **Optional, More → Settings:** opening hours, closures and reminder windows, if the defaults don't fit.
-4. **More → Backup & restore:** save a backup file now and then. This is the only copy outside the phone.
+4. **More → Account & online backup** (optional): sign in to keep a copy online. Then **Settings → Notifications** turns on the daily reminder.
+5. Without an account, **More → Backup & restore** saves a backup file. Do that now and then, because it's the only copy outside the phone.
 
 ## Development
 
@@ -47,7 +51,11 @@ npm run e2e           # browser tests in Edge headless (screenshots → test-out
 npm run check:barcode # barcode decoding works offline via the vendored ZXing
 npm run vendor        # re-copy libraries into app/vendor after updating them
 npm run deploy        # publish the committed app/ to GitHub Pages (gh-pages branch)
+npm run e2e:cloud     # accounts, sync and reminders against a local Supabase (needs Docker; see docs/cloud-setup.md)
+npm run vapid         # create the key pair for reminder notifications
 ```
+
+Accounts, online sync and reminders run on a free Supabase project (`supabase/`: database, security rules, the `send-reminders` function and its schedule). They only switch on when `app/js/config.js` has the project's public URL and key. `docs/cloud-setup.md` lists the setup steps.
 
 | Path | What |
 | --- | --- |
