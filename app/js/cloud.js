@@ -354,7 +354,7 @@ export async function signUp(email, password) {
   const { data, error } = await c.auth.signUp({ email, password, options: { emailRedirectTo: appUrl() } });
   if (error) throw authFailure(error);
   if (!data.session) return { needsConfirmation: true };
-  setSession(data.session);
+  signedIn(data.session);
   return { needsConfirmation: false };
 }
 
@@ -362,7 +362,13 @@ export async function signIn(email, password) {
   const c = await client();
   const { data, error } = await c.auth.signInWithPassword({ email, password });
   if (error) throw authFailure(error);
-  setSession(data.session);
+  signedIn(data.session);
+}
+
+/** Someone signed in on purpose: the sign-in rules apply (upload, take the online copy, or ask). */
+function signedIn(s) {
+  writeJson(SYNC_KEY, null); // bookkeeping left from a session that ended by itself doesn't count
+  setSession(s);
 }
 
 /** Email a link that opens the app and lets the user choose a new password. */
