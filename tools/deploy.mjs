@@ -26,7 +26,7 @@ const sha = git(['rev-parse', '--short', 'HEAD']);
 const name = git(['config', 'user.name']);
 const email = git(['config', 'user.email']);
 
-const out = fs.mkdtempSync(path.join(os.tmpdir(), 'office-pantry-deploy-'));
+const out = fs.mkdtempSync(path.join(os.tmpdir(), 'pantri-deploy-'));
 try {
   fs.cpSync(path.join(ROOT, 'app'), out, { recursive: true });
   execFileSync(process.execPath, [path.join(ROOT, 'tools', 'stamp.mjs'), '--root', out], { stdio: 'inherit' });

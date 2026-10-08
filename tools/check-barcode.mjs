@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // End-to-end check of app/js/barcode.js in a real browser (headless Microsoft Edge):
-//   1. serves app/ under /office-pantry/ with tools/serve.mjs (same sub-path shape as GitHub Pages)
+//   1. serves app/ under /Pantri/ with tools/serve.mjs (same sub-path shape as GitHub Pages)
 //   2. aborts every request that is not to localhost - proves nothing is fetched from a CDN
 //      (a probe fetch to jsDelivr confirms the block is really active)
 //   3. opens a fixture page on that origin (not index.html), imports ./js/barcode.js and decodes
@@ -20,10 +20,10 @@ import { startServer } from './serve.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURES = path.join(ROOT, 'tools', 'fixtures');
-const BASE = '/office-pantry/';
+const BASE = '/Pantri/';
 const FIXTURE_DIR = '__check__/';
 const EAN = '5449000000996';
-const QR_TEXT = 'https://urdateodor.github.io/office-pantry/#/scan?code=5449000000996';
+const QR_TEXT = 'https://urdateodor.github.io/Pantri/#/scan?code=5449000000996';
 const PROBE_URL = 'https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.3/package.json';
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 

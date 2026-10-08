@@ -2,10 +2,10 @@
 // Zero-dependency static file server for the PWA in app/.
 //
 // CLI:
-//   node tools/serve.mjs [port] [--base office-pantry] [--host 127.0.0.1] [--root app]
+//   node tools/serve.mjs [port] [--base Pantri] [--host 127.0.0.1] [--root app]
 //     port    default 8080 (0 = pick a free port)
 //     --base  serve the app under a sub-path, like GitHub Pages does
-//             (--base office-pantry -> http://localhost:8080/office-pantry/), to catch
+//             (--base Pantri -> http://localhost:8080/Pantri/), to catch
 //             accidental absolute URLs. Leading/trailing slashes are optional (omit the
 //             leading one in Git Bash, which rewrites "/x" arguments into Windows paths).
 //     --host  default: all interfaces (so phones on the LAN can reach it)
@@ -72,7 +72,7 @@ function normalizeBase(base) {
     // Git Bash (MSYS) rewrites arguments that start with '/' into Windows paths.
     throw new Error(
       `Invalid base "${b}" (looks like a file path; Git Bash converts arguments starting with "/"). ` +
-        'Pass it without the leading slash, e.g. --base office-pantry, or set MSYS_NO_PATHCONV=1.',
+        'Pass it without the leading slash, e.g. --base Pantri, or set MSYS_NO_PATHCONV=1.',
     );
   }
   if (!b.startsWith('/')) b = `/${b}`;
@@ -202,7 +202,7 @@ function createHandler({ rootDir, base, log }) {
  * @param {string} [options.root='app']  Directory to serve; relative paths resolve against the project root.
  * @param {number} [options.port=0]      0 = any free port.
  * @param {string|null} [options.host='127.0.0.1']  null = all interfaces (dual-stack).
- * @param {string} [options.base='/']    URL sub-path to mount the app under, e.g. '/office-pantry/'.
+ * @param {string} [options.base='/']    URL sub-path to mount the app under, e.g. '/Pantri/'.
  * @param {boolean} [options.log=false]  Log one line per request.
  * @returns {Promise<{url: string, port: number, rootDir: string, server: http.Server, close: () => Promise<void>}>}
  *   `url` always ends with '/' (it is the app's base URL).
@@ -275,7 +275,7 @@ async function main(argv) {
     else if (arg === '--root') opts.root = value();
     else if (arg === '--quiet') opts.log = false;
     else if (arg === '-h' || arg === '--help') {
-      console.log('Usage: node tools/serve.mjs [port=8080] [--base office-pantry] [--host <addr>] [--root app] [--quiet]');
+      console.log('Usage: node tools/serve.mjs [port=8080] [--base Pantri] [--host <addr>] [--root app] [--quiet]');
       return;
     } else if (/^\d+$/.test(arg)) opts.port = Number(arg);
     else throw new Error(`Unknown argument: ${arg}`);

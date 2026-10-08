@@ -13,7 +13,7 @@ It's an installable web app (PWA), not a store app. It works offline. All data s
 
 ## Install on your phone
 
-1. Open **https://urdateodor.github.io/office-pantry/** on the phone:
+1. Open **https://urdateodor.github.io/Pantri/** on the phone:
    - Android: in Chrome.
    - iPhone: in Safari.
 2. Install it:
