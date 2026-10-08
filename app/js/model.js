@@ -151,6 +151,44 @@ export function roundNice(n) {
   return Math.round(n * 100) / 100;
 }
 
+// ---------- sites ----------
+// Top-level locations are sites (e.g. Office, Corp House, Vlad's apt). Each product belongs to the site of
+// its usual location; a site may override the office days/hours used for usage estimates.
+
+/** Top-level locations (sites), in display order. */
+export function sitesOf(locations) {
+  return locations.filter(l => !l.parentId).sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+}
+
+/** Id of the site (top-level location) that contains location `id`, or null. */
+export function siteOf(locations, id) {
+  if (!id) return null;
+  const byId = locations instanceof Map ? locations : new Map(locations.map(l => [l.id, l]));
+  let l = byId.get(id);
+  for (let guard = 0; l && l.parentId && guard < 50; guard++) l = byId.get(l.parentId);
+  return l ? l.id : null;
+}
+
+/** Settings with a site's own schedule applied (days, hours, whether office closures apply). */
+export function siteSettings(settings, site) {
+  const sch = site && site.schedule;
+  if (!sch) return settings;
+  return {
+    ...settings,
+    workdays: sch.workdays && sch.workdays.length ? sch.workdays : settings.workdays,
+    dayStart: sch.dayStart || settings.dayStart,
+    dayEnd: sch.dayEnd || settings.dayEnd,
+    closed: sch.holidays === false ? [] : settings.closed,
+  };
+}
+
+/** The settings that govern a product's usage estimates (its site's schedule). */
+export function productSettings(state, p) {
+  const locations = state.locations || [];
+  const siteId = siteOf(locations, p.locationId);
+  return siteSettings(state.settings, siteId && locations.find(l => l.id === siteId));
+}
+
 // ---------- stock estimates ----------
 
 /** Batches in the order they get used: earliest expiry first (no date last), then oldest. */
@@ -202,14 +240,26 @@ const LOOKAHEAD_DAYS = 30; // how far ahead "won't be used in time" warnings rea
 
 /** Per-product view of the pantry at `now`: Map(productId → info). */
 export function analyze(state, now) {
-  const s = state.settings;
+  const g = state.settings;
+  const locs = new Map((state.locations || []).map(l => [l.id, l]));
+  const siteCache = new Map();
+  const siteIdOf = id => {
+    if (!id) return null;
+    if (!siteCache.has(id)) siteCache.set(id, siteOf(locs, id));
+    return siteCache.get(id);
+  };
   const byProduct = new Map(state.products.map(p => [p.id, []]));
   for (const b of state.batches) byProduct.get(b.productId)?.push(b);
   const out = new Map();
   for (const p of state.products) {
+    const siteId = siteIdOf(p.locationId);
+    const s = siteSettings(g, siteId && locs.get(siteId));
     const est = estimate(p, byProduct.get(p.id), s, now);
     const batches = est.per.map(({ batch, qty }) => {
-      const row = { batch, qty, present: qty >= PRESENT, expiresAt: null, expired: false, unused: null };
+      const row = {
+        batch, qty, present: qty >= PRESENT, expiresAt: null, expired: false, unused: null,
+        siteId: siteIdOf(batch.locationId) || siteId,
+      };
       if (batch.expiry) {
         row.expiresAt = expiresAt(batch.expiry);
         row.expired = now >= row.expiresAt;
@@ -223,6 +273,8 @@ export function analyze(state, now) {
     const firstDated = present.find(b => b.expiresAt);
     out.set(p.id, {
       product: p,
+      siteId,
+      settings: s,
       est,
       batches,
       out: est.total < PRESENT,
@@ -235,6 +287,11 @@ export function analyze(state, now) {
   return out;
 }
 
+/** Does this product belong to (or have stock at) the given site? null = any site. */
+export function atSite(i, site) {
+  return site == null || inSite(i.siteId, site) || i.batches.some(b => b.present && inSite(b.siteId, site));
+}
+
 /** Quantity of a product estimated to be in one location (all batches there). */
 export function qtyIn(info, locationId) {
   return info.batches
@@ -244,7 +301,10 @@ export function qtyIn(info, locationId) {
 
 // ---------- what to look at today ----------
 
-export function todayLists(info, s, now) {
+/** Site filter: null/undefined = every site, '' = products without a site, otherwise a site id. */
+const inSite = (siteId, want) => want == null || (siteId || '') === want;
+
+export function todayLists(info, s, now, site = null) {
   const checks = [];
   const expired = [];
   const soon = [];
@@ -254,8 +314,9 @@ export function todayLists(info, s, now) {
     const e = i.est;
     const snoozed = p.snoozeUntil && p.snoozeUntil > now;
     const verified = lastWasCount(p);
+    const mine = inSite(i.siteId, site);
     let checking = false;
-    if (!snoozed && e.rate > 0) {
+    if (mine && !snoozed && e.rate > 0) {
       // "Gone?" only when stock was recorded but the estimate used it all up — never after a
       // person counted zero, used it up or threw it away (then recorded stock is zero already).
       if (e.total < PRESENT && e.recorded >= PRESENT) {
@@ -267,12 +328,12 @@ export function todayLists(info, s, now) {
       }
     }
     for (const b of i.batches) {
-      if (!b.present || !b.expiresAt) continue;
+      if (!b.present || !b.expiresAt || !inSite(b.siteId, site)) continue;
       if (b.expired) expired.push({ i, b });
       else if (b.expiresAt - now <= s.warnDays * DAY || b.unused >= PRESENT) soon.push({ i, b });
     }
     if (
-      !checking && !snoozed && s.staleDays > 0 && !i.out &&
+      mine && !checking && !snoozed && s.staleDays > 0 && !i.out &&
       now - (p.touchedAt || p.createdAt) > s.staleDays * DAY
     ) stale.push({ i });
   }
@@ -299,25 +360,31 @@ export function suggestOrder(p, e, s, now) {
   return { units, pack, packs: pack > 1 ? Math.ceil(units / pack) : null };
 }
 
-export function reorderList(info, s, now) {
+export function reorderList(info, s, now, site = null) {
   const horizon = addDays(now, s.orderEveryDays);
   const need = [];
   const ordered = [];
   for (const i of info.values()) {
+    if (!inSite(i.siteId, site)) continue;
     const p = i.product;
     const e = i.est;
+    const ps = i.settings || s;
     if (p.orderedAt) {
-      ordered.push({ i, reason: null, qty: suggestOrder(p, e, s, now) });
+      ordered.push({ i, reason: null, qty: suggestOrder(p, e, ps, now) });
       continue;
     }
     if (p.reorder === false) continue;
+    // Expired stock is still on the shelf (until thrown away) but can't be used: don't count it.
+    const expired = i.batches.reduce((t, b) => t + (b.present && b.expired ? b.qty : 0), 0);
+    const usable = Math.max(0, e.total - expired);
     let reason = null;
     if (i.out) reason = e.recorded >= PRESENT ? 'probably-out' : 'out';
-    else if (i.low) reason = 'low';
+    else if (usable < PRESENT) reason = 'expired';
+    else if (p.minStock > 0 && usable <= p.minStock) reason = 'low';
     else if (e.runOutAt != null && e.runOutAt <= horizon) reason = 'soon';
-    if (reason) need.push({ i, reason, qty: suggestOrder(p, e, s, now) });
+    if (reason) need.push({ i, reason, qty: suggestOrder(p, { ...e, total: usable }, ps, now) });
   }
-  const rank = { out: 0, 'probably-out': 1, low: 2, soon: 3 };
+  const rank = { out: 0, 'probably-out': 1, expired: 2, low: 3, soon: 4 };
   need.sort((a, b) => rank[a.reason] - rank[b.reason] || a.i.product.name.localeCompare(b.i.product.name));
   ordered.sort((a, b) => a.i.product.orderedAt - b.i.product.orderedAt);
   return { need, ordered };
@@ -406,6 +473,17 @@ export function wasteSummary(state, now, days = 90) {
 }
 
 // ---------- lookups ----------
+
+/** Every product carrying this barcode (one per site, at most, when you track several sites). */
+export function findAllByCode(products, code) {
+  const k = codeKey(code);
+  const out = [];
+  for (const p of products) {
+    const b = (p.barcodes || []).find(x => codeKey(x.code) === k);
+    if (b) out.push({ product: p, units: b.units || 1 });
+  }
+  return out;
+}
 
 export function findByCode(products, code) {
   const k = codeKey(code);

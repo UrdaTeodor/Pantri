@@ -32,6 +32,7 @@ try {
   execFileSync(process.execPath, [path.join(ROOT, 'tools', 'stamp.mjs'), '--root', out], { stdio: 'inherit' });
   fs.writeFileSync(path.join(out, '.nojekyll'), '');
   git(['init', '-q', '-b', 'gh-pages'], out);
+  git(['config', 'core.autocrlf', 'false'], out);
   git(['add', '-A'], out);
   git(['-c', `user.name=${name}`, '-c', `user.email=${email}`, 'commit', '-q', '-m', `Deploy ${sha}`], out);
   execFileSync('git', ['push', '--force', '--quiet', remote, 'gh-pages'], { cwd: out, stdio: 'inherit' });

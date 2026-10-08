@@ -2,10 +2,10 @@
 
 import { html, useState, useEffect, useRef } from './lib.js';
 import { ask, goBack, navigate, promptSheet, showToast } from './nav.js';
-import { useApp, Header, Icon, Stepper, ExpiryPicker, LocationSelect, CategorySelect, Thumb, focusOnMount } from './kit.js';
+import { useApp, Header, Icon, Stepper, ExpiryPicker, LocationSelect, CategorySelect, Thumb, focusOnMount, siteContext } from './kit.js';
 import { createProduct, updateProduct, addBarcode, addCategory, requestPersistenceOnce } from '../store.js';
 import { lookupProduct, guessCategory } from '../lookup.js';
-import { findByCode } from '../model.js';
+import { findAllByCode, siteOf } from '../model.js';
 import { plural, PER_LABEL } from '../format.js';
 
 const UNITS = ['pcs', 'bottle', 'can', 'bag', 'box', 'pack', 'carton', 'jar', 'roll', 'cup', 'pod', 'kg', 'L'];
@@ -123,10 +123,13 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
     const barcodes = f.barcodes
       .map(b => ({ code: String(b.code).trim(), units: Math.max(1, Math.round(Number(b.units)) || 1) }))
       .filter(b => b.code);
+    // A barcode belongs to one product per site (several sites can each track the same item).
+    const site = siteOf(state.locations, f.locationId);
     for (const b of barcodes) {
-      const other = findByCode(state.products, b.code);
-      if (other && (!editing || other.product.id !== product.id)) {
-        setError(`Barcode ${b.code} already belongs to "${other.product.name}".`);
+      const other = findAllByCode(state.products, b.code)
+        .find(m => (!editing || m.product.id !== product.id) && siteOf(state.locations, m.product.locationId) === site);
+      if (other) {
+        setError(`Barcode ${b.code} already belongs to "${other.product.name}"${site ? ' at this site' : ''}.`);
         return;
       }
     }
@@ -274,9 +277,13 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
     </form>`;
 }
 
+/** Where new products go by default: the most recently used place (within the site being shown). */
 function lastLocation(state) {
-  const recent = [...state.products].sort((a, b) => (b.addedAt || b.createdAt) - (a.addedAt || a.createdAt))[0];
-  return recent ? recent.locationId : null;
+  const { siteId } = siteContext(state);
+  const recent = state.products
+    .filter(p => !siteId || siteOf(state.locations, p.locationId) === siteId)
+    .sort((a, b) => (b.addedAt || b.createdAt) - (a.addedAt || a.createdAt))[0];
+  return recent ? recent.locationId : siteId;
 }
 
 /** Routes #/new and #/edit/:id. */

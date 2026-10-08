@@ -2,15 +2,15 @@
 // Restock mode (#/scan?mode=restock) keeps scanning after each item, for unpacking a delivery.
 
 import { html, useState, useEffect, useRef } from './lib.js';
-import { ask, goBack, navigate, promptSheet, showToast } from './nav.js';
-import { useApp, Icon, Thumb, placeText } from './kit.js';
+import { ask, goBack, navigate, promptSheet, pickSheet, showToast } from './nav.js';
+import { useApp, Icon, Thumb, placeText, siteContext, siteName } from './kit.js';
 import { AddStockForm, CountForm, UseForm, chooseAndWaste, undoToast } from './sheets.js';
 import { ProductForm } from './product-form.js';
 import { createDetector } from '../barcode.js';
 import { interpretScan } from '../codes.js';
-import { findByCode } from '../model.js';
+import { findAllByCode, siteOf } from '../model.js';
 import { qtyText } from '../format.js';
-import { getState } from '../store.js';
+import { getState, copyProductToSite, setCurrentSite } from '../store.js';
 
 let audio = null;
 function beep(on) {
@@ -104,6 +104,7 @@ function NewSheet({ code, expiry, restock, close }) {
 }
 
 export function ScanScreen({ route }) {
+  const { state } = useApp();
   const restock = route.query.get('mode') === 'restock';
   const video = useRef(null);
   const track = useRef(null);
@@ -121,10 +122,41 @@ export function ScanScreen({ route }) {
 
   const leave = () => goBack('#/');
 
+  /** Which product a scanned code means here. With several sites, products are per site. */
+  async function resolveProduct(code) {
+    const state = getState();
+    const { multi, siteId, site } = siteContext(state);
+    const matches = findAllByCode(state.products, code);
+    if (!multi || !matches.length) return matches[0] || null;
+    const siteOfP = p => siteOf(state.locations, p.locationId);
+    const here = siteId ? matches.filter(m => siteOfP(m.product) === siteId) : matches;
+    if (here.length === 1) return here[0];
+    if (here.length > 1) {
+      return (await pickSheet({
+        title: 'Which site is this for?',
+        options: here.map(m => ({ label: siteName(state, siteOfP(m.product)), sub: m.product.name, value: m })),
+      })) || 'cancel';
+    }
+    const other = matches[0];
+    const choice = await pickSheet({
+      title: `${other.product.name} isn't tracked at ${site.name} yet`,
+      options: [
+        { label: `Track it at ${site.name}`, sub: 'Separate stock, usage and reorder list for this site', value: 'copy' },
+        { label: `Use the ${siteName(state, siteOfP(other.product))} one`, sub: 'Shared with that site', value: 'other' },
+      ],
+    });
+    if (choice === 'copy') {
+      const id = copyProductToSite(other.product.id, siteId);
+      return { product: getState().products.find(p => p.id === id), units: other.units };
+    }
+    return choice === 'other' ? other : 'cancel';
+  }
+
   async function handleCode(raw) {
     const { code, expiry } = interpretScan(raw);
     if (!code) return resume();
-    let found = findByCode(getState().products, code);
+    const found = await resolveProduct(code);
+    if (found === 'cancel') return resume();
     let result;
     if (found) {
       result = await ask(close => html`<${KnownSheet} productId=${found.product.id} units=${found.units} expiry=${expiry} restock=${restock} close=${close} />`);
@@ -229,6 +261,16 @@ export function ScanScreen({ route }) {
   };
 
   const added = tally.reduce((t, x) => t + x.qty, 0);
+  const ctx = siteContext(state);
+  const chooseSite = async () => {
+    paused.current = true;
+    const v = await pickSheet({
+      title: 'Where are you scanning?',
+      options: [...ctx.sites.map(x => ({ label: x.name, value: x.id })), { label: 'All sites', sub: 'Ask when a barcode exists at several sites', value: '__all' }],
+    });
+    if (v) setCurrentSite(v === '__all' ? null : v);
+    resume();
+  };
 
   return html`
     <div class="scanner">
@@ -236,7 +278,10 @@ export function ScanScreen({ route }) {
       ${phase === 'live' && html`<div class="scan-frame" aria-hidden="true"><span class="scan-line"></span></div>`}
       <div class="scan-top">
         <button class="icon-btn on-dark" aria-label="Close scanner" onClick=${leave}><${Icon} name="x" /></button>
-        <div class="scan-title">${restock ? 'Restock — scan each item' : 'Scan a barcode'}</div>
+        <div class="scan-title">
+          ${restock ? 'Restock — scan each item' : 'Scan a barcode'}
+          ${ctx.multi && html`<button class="site-pill" onClick=${chooseSite}><${Icon} name="pin" size=${14} /> ${ctx.site ? ctx.site.name : 'All sites'}</button>`}
+        </div>
         ${torch !== null && html`
           <button class=${`icon-btn on-dark${torch ? ' lit' : ''}`} aria-label="Torch" aria-pressed=${torch} onClick=${toggleTorch}>
             <${Icon} name="bolt" />

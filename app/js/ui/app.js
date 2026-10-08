@@ -4,7 +4,7 @@ import { html, useState, useEffect, useMemo, useReducer } from './lib.js';
 import {
   useNav, currentRoute, currentSheets, currentToast, closeSheet, hideToast, goTab, navigate, TABS,
 } from './nav.js';
-import { AppCtx, Icon, useApp } from './kit.js';
+import { AppCtx, Icon, useApp, siteContext } from './kit.js';
 import { Today } from './today.js';
 import { Pantry } from './pantry.js';
 import { ProductPage } from './product.js';
@@ -46,11 +46,12 @@ function useTick() {
 
 function Nav({ active }) {
   const { state, info, now } = useApp();
+  const { siteId } = siteContext(state);
   const badges = useMemo(() => {
-    const t = todayLists(info, state.settings, now);
-    const r = reorderList(info, state.settings, now);
+    const t = todayLists(info, state.settings, now, siteId);
+    const r = reorderList(info, state.settings, now, siteId);
     return { today: t.checks.length + t.expired.length, reorder: r.need.length + state.shopping.filter(s => !s.done).length };
-  }, [info, now]);
+  }, [info, now, siteId]);
   const item = (name, label, icon) => html`
     <a href=${`#/${name === 'today' ? '' : name}`} class=${`nav-item${active === name ? ' active' : ''}`}
       aria-current=${active === name ? 'page' : null}

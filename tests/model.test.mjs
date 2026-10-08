@@ -314,7 +314,8 @@ test('store: locations delete moves children and stock up; import validates', ()
   assert.equal(s.products.find(p => p.id === id).locationId, kitchen);
   // can't move a location under its own descendant
   store.moveLocation(kitchen, door);
-  assert.equal(store.getState().locations.find(l => l.id === kitchen).parentId, null);
+  const office = store.getState().locations.find(l => l.name === 'Office').id;
+  assert.equal(store.getState().locations.find(l => l.id === kitchen).parentId, office);
 
   const json = store.exportJson();
   store.eraseAll();
@@ -338,4 +339,61 @@ test('analyze stays fast with a realistic pantry', () => {
   reorderList(info, S, at(WED, 12));
   const ms = performance.now() - t0;
   assert.ok(ms < 400, `analyze took ${ms.toFixed(0)} ms`);
+});
+
+// ---------- several sites ----------
+
+import { sitesOf, siteOf, siteSettings, findAllByCode as findAll } from '../app/js/model.js';
+
+test('sites: top-level locations, per-site hours, per-site lists', () => {
+  store.resetStore(store.initialState(at(MON, 9)));
+  const office = store.getState().locations.find(l => l.name === 'Office').id;
+  const fridge = store.getState().locations.find(l => l.name === 'Fridge').id;
+  const flat = store.addLocation("Vlad's apt", null);
+  const corp = store.addLocation('Corp House', null);
+  let s = store.getState();
+  assert.deepEqual(sitesOf(s.locations).map(l => l.name), ['Office', "Vlad's apt", 'Corp House']);
+  assert.equal(siteOf(s.locations, fridge), office);
+
+  // The flat is used every day, all day; office closures don't apply there.
+  store.setSiteSchedule(flat, { workdays: [0, 1, 2, 3, 4, 5, 6], dayStart: '00:00', dayEnd: '00:00', holidays: false });
+  s = store.getState();
+  const flatSettings = siteSettings(s.settings, s.locations.find(l => l.id === flat));
+  near(officeTime(at(SAT, 0), at(MON + 7, 0), flatSettings), 2); // the weekend counts at the flat
+  near(officeTime(at(SAT, 0), at(MON + 7, 0), s.settings), 0); // …but not at the office
+
+  // Same barcode, tracked separately at the office and at the flat (1 per day each).
+  const code = [{ code: '5449000000996', units: 1 }];
+  const water = withClock(at(FRI, 18), () => store.createProduct({ name: 'Water', rate: { qty: 1, per: 'day' }, locationId: fridge, barcodes: code }, { qty: 10 }));
+  const flatWater = withClock(at(FRI, 18), () => store.copyProductToSite(water, flat));
+  withClock(at(FRI, 18), () => store.addStock(flatWater, { qty: 10, expiry: '2026-10-19' }));
+  s = store.getState();
+  assert.equal(findAll(s.products, '5449000000996').length, 2);
+  const flatCopy = s.products.find(p => p.id === flatWater);
+  assert.equal(flatCopy.locationId, flat);
+  assert.deepEqual(flatCopy.barcodes, code);
+  const info = analyze(s, at(MON + 7, 0));
+  near(info.get(water).est.total, 10); // nothing used at the office over the weekend
+  near(info.get(flatWater).est.total, 10 - 2.25); // Fri 18:00 → Mon 00:00 at the flat = 2.25 days
+
+  // A batch at Corp House shows up only in Corp House's lists.
+  const milk = withClock(at(FRI, 18), () => store.createProduct({ name: 'Milk', locationId: corp }, { qty: 2, expiry: '2026-10-19' }));
+  s = store.getState();
+  const all = analyze(s, at(MON + 7, 9));
+  const names = l => l.soon.map(x => x.i.product.name).sort();
+  assert.deepEqual(names(todayLists(all, s.settings, at(MON + 7, 9))), ['Milk', 'Water']);
+  assert.deepEqual(names(todayLists(all, s.settings, at(MON + 7, 9), corp)), ['Milk']);
+  assert.deepEqual(names(todayLists(all, s.settings, at(MON + 7, 9), flat)), ['Water']);
+  assert.deepEqual(names(todayLists(all, s.settings, at(MON + 7, 9), office)), []);
+  assert.equal(all.get(milk).siteId, corp);
+
+  // Only expired milk left at Corp House → it goes on the reorder list (expired stock isn't usable).
+  const tue = at(MON + 8, 9); // milk printed Mon 19th → expired from Tue
+  const r = reorderList(analyze(s, tue), s.settings, tue, corp);
+  assert.deepEqual(r.need.map(x => [x.i.product.name, x.reason, x.qty.units]), [['Milk', 'expired', 1]]);
+
+  // Changing a site's hours is not retroactive: estimates up to now are kept.
+  const before = analyze(store.getState(), at(MON + 7, 9)).get(flatWater).est.total;
+  withClock(at(MON + 7, 9), () => store.setSiteSchedule(flat, null));
+  near(analyze(store.getState(), at(MON + 7, 9)).get(flatWater).est.total, before);
 });

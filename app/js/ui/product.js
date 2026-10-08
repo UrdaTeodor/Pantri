@@ -2,12 +2,14 @@
 
 import { html } from './lib.js';
 import { navigate, goBack, pickSheet, confirmSheet, showToast } from './nav.js';
-import { useApp, Header, Icon, Thumb, Empty, placeText } from './kit.js';
+import { useApp, Header, Icon, Thumb, Empty, placeText, siteContext } from './kit.js';
 import { openAddStock, openCount, openUse, chooseAndWaste, openBatch, undoToast } from './sheets.js';
-import { rateSuggestion, observedRate, unusedAtExpiry, wasteSummary, fromPerOfficeDay, roundNice } from '../model.js';
+import {
+  rateSuggestion, observedRate, unusedAtExpiry, wasteSummary, fromPerOfficeDay, roundNice, findAllByCode, siteOf,
+} from '../model.js';
 import { qtyText, rateText, dayText, ago, expiryText, fmtNum, PER_LABEL, plural } from '../format.js';
 import {
-  applyRate, dismissRateHint, deleteProduct, setReorder, setOrdered,
+  applyRate, dismissRateHint, deleteProduct, setReorder, setOrdered, copyProductToSite,
 } from '../store.js';
 
 const EVENT_TEXT = {
@@ -47,8 +49,9 @@ export function ProductPage({ route }) {
   }
   const p = i.product;
   const e = i.est;
-  const s = state.settings;
+  const s = i.settings;
   const tracked = e.rate > 0;
+  const sites = siteContext(state);
   const sug = rateSuggestion(p, state.events, s);
   const obs = observedRate(state.events, id, s);
   const waste = wasteSummary({ ...state, events: state.events.filter(x => x.productId === id) }, now).rows[0];
@@ -71,9 +74,29 @@ export function ProductPage({ route }) {
         p.reorder === false
           ? { label: 'Show on the reorder list again', value: 'reorder-on' }
           : { label: "Don't reorder this product", sub: 'For one-off items', value: 'reorder-off' },
+        ...(sites.multi ? [{ label: 'Also track at another site…', sub: 'Its own stock, usage and reorder list there', value: 'copy' }] : []),
         { label: 'Delete product', sub: 'Removes it and its stock', value: 'delete', danger: true },
       ],
     });
+    if (choice === 'copy') {
+      const target = await pickSheet({
+        title: `Track ${p.name} at…`,
+        options: sites.sites.filter(x => x.id !== i.siteId).map(x => ({ label: x.name, value: x.id })),
+      });
+      if (!target) return;
+      const existing = p.barcodes.flatMap(b => findAllByCode(state.products, b.code))
+        .find(m => siteOf(state.locations, m.product.locationId) === target);
+      const name = sites.sites.find(x => x.id === target).name;
+      if (existing) {
+        showToast(`Already tracked at ${name}`);
+        navigate(`#/product/${existing.product.id}`);
+      } else {
+        const copy = copyProductToSite(id, target);
+        showToast(`Now tracking ${p.name} at ${name} — add its stock there`);
+        navigate(`#/product/${copy}`);
+      }
+      return;
+    }
     if (choice === 'order' || choice === 'unorder') setOrdered(id, choice === 'order');
     if (choice === 'reorder-on' || choice === 'reorder-off') {
       setReorder(id, choice === 'reorder-on');

@@ -191,6 +191,21 @@ button.row:active, .row-main[onclick]:active { background: var(--surface-2); }
 .link-btn.center { display: flex; margin: 14px auto 0; }
 .link-btn.on-dark { color: #9be7dc; }
 
+/* ---------- sites ---------- */
+
+.site-bar { display: flex; gap: 6px; overflow-x: auto; margin: 0 -16px 4px; padding: 2px 16px 8px; scrollbar-width: none; }
+.site-bar::-webkit-scrollbar { display: none; }
+.site-bar .chip-btn { flex: none; }
+.site-block + .site-block { margin-top: 26px; }
+.site-title { display: flex; align-items: center; gap: 8px; margin: 18px 4px -4px; font-size: 19px; }
+.site-title .icon { color: var(--primary); }
+.group-title { display: flex; align-items: center; gap: 6px; margin: 14px 4px 8px; font-size: 15px; color: var(--text); }
+.group-title .icon { color: var(--primary); }
+.site-pill {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; padding: 3px 10px;
+  border: 0; border-radius: 999px; background: rgb(255 255 255 / 22%); color: #fff; font-size: 13px; font-weight: 600;
+}
+
 /* ---------- Today ---------- */
 
 .check-card { padding: 12px 14px 8px; }

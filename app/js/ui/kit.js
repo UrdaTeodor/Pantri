@@ -2,8 +2,9 @@
 
 import { html, useState, createContext, useContext } from './lib.js';
 import { goBack } from './nav.js';
-import { addDays, startOfDay, ymd, locationTree, locationPath } from '../model.js';
+import { addDays, startOfDay, ymd, locationTree, locationPath, sitesOf, siteOf, siteSettings } from '../model.js';
 import { expiryText, qtyText, expiryShort } from '../format.js';
+import { setCurrentSite } from '../store.js';
 
 export const AppCtx = createContext(null);
 /** { state, info, now } — the store state, per-product analysis and the current time. */
@@ -134,12 +135,37 @@ export function ExpiryPicker({ value, onChange, product = null, now, note = '' }
     </div>`;
 }
 
-export function LocationSelect({ value, onChange, locations, none = '— No location —' }) {
+/** Location picker. `within` (a site id) limits it to that site's places. */
+export function LocationSelect({ value, onChange, locations, within = null, none = '— No location —' }) {
+  const single = sitesOf(locations).length < 2;
+  const tree = locationTree(locations).filter(t => !within || siteOf(locations, t.loc.id) === within);
   return html`
     <select class="input" value=${value || ''} onChange=${e => onChange(e.target.value || null)}>
-      <option value="">${none}</option>
-      ${locationTree(locations).map(t => html`<option value=${t.loc.id}>${t.path}</option>`)}
+      ${!within && html`<option value="">${none}</option>`}
+      ${tree.map(t => html`<option value=${t.loc.id}>${single || within ? stripSite(t.path) : t.path}</option>`)}
     </select>`;
+}
+
+const stripSite = path => (path.includes(' › ') ? path.slice(path.indexOf(' › ') + 3) : path);
+
+// ---------- sites ----------
+
+/** Sites (top-level locations) and the one being shown: { sites, multi, siteId, site, settings }. */
+export function siteContext(state) {
+  const sites = sitesOf(state.locations);
+  const multi = sites.length >= 2;
+  const site = multi ? sites.find(x => x.id === state.meta.siteId) || null : null;
+  return { sites, multi, siteId: site ? site.id : null, site, settings: siteSettings(state.settings, site) };
+}
+
+/** "All sites | Office | Corp House | …" — only shown when there are at least two sites. */
+export function SiteBar() {
+  const { state } = useApp();
+  const { sites, multi, siteId } = siteContext(state);
+  if (!multi) return null;
+  const chip = (id, label) => html`
+    <button class=${`chip-btn${siteId === id ? ' on' : ''}`} aria-pressed=${siteId === id} onClick=${() => setCurrentSite(id)}>${label}</button>`;
+  return html`<div class="site-bar" role="group" aria-label="Site">${chip(null, 'All sites')}${sites.map(x => chip(x.id, x.name))}</div>`;
 }
 
 export function CategorySelect({ value, onChange, categories }) {
@@ -189,6 +215,14 @@ export function ProductRow({ i, now, qty = null, onClick, sub = null }) {
     </button>`;
 }
 
+/** Where something is. With a single site the site name is left out ("Kitchen › Fridge"). */
 export function placeText(state, locationId) {
-  return locationPath(state.locations, locationId) || 'No location';
+  const path = locationPath(state.locations, locationId);
+  if (!path) return 'No location';
+  return sitesOf(state.locations).length < 2 ? stripSite(path) : path;
+}
+
+export function siteName(state, siteId) {
+  const site = siteId && state.locations.find(l => l.id === siteId);
+  return site ? site.name : 'No site';
 }

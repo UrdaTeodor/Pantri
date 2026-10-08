@@ -2,7 +2,7 @@
 
 import { html, useState, useMemo } from './lib.js';
 import { navigate, goTab, showToast } from './nav.js';
-import { useApp, Header, Icon, Thumb, Stepper, placeText } from './kit.js';
+import { useApp, Header, Icon, Thumb, Stepper, placeText, SiteBar, siteContext } from './kit.js';
 import { doCount, openWaste, openBatch, openCount, undoToast } from './sheets.js';
 import { todayLists, reorderList, isOfficeOpen, addDays, startOfDay, DAY } from '../model.js';
 import { longDate, dayText, qtyText, expiryText, fmtNum } from '../format.js';
@@ -98,7 +98,8 @@ function Welcome() {
           <button class="link-btn inline" onClick=${() => navigate('#/settings')}>Settings</button>
         </li>
         <li>
-          <b>Arrange your locations</b> however you like — e.g. Kitchen › Fridge › Door.
+          <b>Arrange your locations</b> however you like — e.g. Office › Kitchen › Fridge. Several buildings or flats?
+          Add each as a top-level site (Office, Corp House, …) and get reminders per site.
           <button class="link-btn inline" onClick=${() => navigate('#/locations')}>Locations</button>
         </li>
         <li>
@@ -138,23 +139,9 @@ function StaleRow({ i }) {
     </div>`;
 }
 
-export function Today() {
-  const { state, info, now } = useApp();
-  const s = state.settings;
-  const lists = useMemo(() => todayLists(info, s, now), [info, now]);
-  const reorder = useMemo(() => reorderList(info, s, now), [info, now]);
-  const [showStale, setShowStale] = useState(false);
-  const toOrder = reorder.need.length + state.shopping.filter(x => !x.done).length;
-  const quiet = !lists.checks.length && !lists.expired.length && !lists.soon.length;
-  const open = isOfficeOpen(now, s);
+/** Check / expired / use-soon sections for one site (or everything). */
+function Lists({ lists }) {
   return html`
-    <${Header} title="Today" sub=${`${longDate(now)} · ${open ? 'office open' : 'office closed, usage paused'}`}
-      actions=${html`<button class="icon-btn" aria-label="Restock: scan a delivery" title="Restock"
-        onClick=${() => navigate('#/scan?mode=restock')}><${Icon} name="truck" /></button>`} />
-    <main class="page">
-      ${!state.products.length && html`<${Welcome} />`}
-      <${BackupNudge} />
-
       ${lists.checks.length > 0 && html`
         <section class="section">
           <h2 class="section-title">Check these <span class="count">${lists.checks.length}</span></h2>
@@ -172,7 +159,43 @@ export function Today() {
         <section class="section">
           <h2 class="section-title">Use soon <span class="count">${lists.soon.length}</span></h2>
           <div class="card list">${lists.soon.map(x => html`<${SoonRow} key=${x.b.batch.id} x=${x} />`)}</div>
-        </section>`}
+        </section>`}`;
+}
+
+const isQuiet = l => !l.checks.length && !l.expired.length && !l.soon.length;
+
+export function Today() {
+  const { state, info, now } = useApp();
+  const s = state.settings;
+  const { sites, multi, siteId, site, settings } = siteContext(state);
+  const grouped = multi && !siteId;
+  const allBlocks = useMemo(() => (grouped
+    ? [...sites.map(x => ({ key: x.id, title: x.name, lists: todayLists(info, s, now, x.id) })),
+      { key: 'none', title: 'Not at a site', lists: todayLists(info, s, now, '') }]
+    : [{ key: 'all', title: null, lists: todayLists(info, s, now, siteId) }]), [info, now, siteId, grouped]);
+  const blocks = allBlocks.filter(b => !isQuiet(b.lists));
+  const lists = allBlocks.reduce((a, b) => ({
+    checks: [...a.checks, ...b.lists.checks], expired: [...a.expired, ...b.lists.expired],
+    soon: [...a.soon, ...b.lists.soon], stale: [...a.stale, ...b.lists.stale],
+  }), { checks: [], expired: [], soon: [], stale: [] });
+  const reorder = useMemo(() => reorderList(info, s, now, siteId), [info, now, siteId]);
+  const [showStale, setShowStale] = useState(false);
+  const toOrder = reorder.need.length + state.shopping.filter(x => !x.done).length;
+  const quiet = isQuiet(lists);
+  const open = isOfficeOpen(now, settings);
+  const where = site ? site.name : multi ? 'all sites' : 'office';
+  return html`
+    <${Header} title="Today" sub=${`${longDate(now)}${multi && !site ? '' : ` · ${where} ${open ? 'open' : 'closed, usage paused'}`}`}
+      actions=${html`<button class="icon-btn" aria-label="Restock: scan a delivery" title="Restock"
+        onClick=${() => navigate('#/scan?mode=restock')}><${Icon} name="truck" /></button>`} />
+    <main class="page">
+      <${SiteBar} />
+      ${!state.products.length && html`<${Welcome} />`}
+      <${BackupNudge} />
+
+      ${blocks.map(b => b.title
+        ? html`<div class="site-block" key=${b.key}><h2 class="site-title"><${Icon} name="pin" size=${18} /> ${b.title}</h2><${Lists} lists=${b.lists} /></div>`
+        : html`<${Lists} key=${b.key} lists=${b.lists} />`)}
 
       ${state.products.length > 0 && quiet && html`
         <div class="all-clear"><${Icon} name="check" size=${28} /><span>Nothing to check right now.</span></div>`}
@@ -181,7 +204,7 @@ export function Today() {
         <button class="card link-card" onClick=${() => goTab('reorder')}>
           <${Icon} name="cart" />
           <span class="row-main">
-            <span class="row-title">Reorder list</span>
+            <span class="row-title">Reorder list${site ? ` · ${site.name}` : ''}</span>
             <span class="row-sub">${toOrder ? `${toOrder} to order` : 'Nothing to order'}${reorder.ordered.length ? ` · ${reorder.ordered.length} on order` : ''}</span>
           </span>
           <${Icon} name="chevron" />

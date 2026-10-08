@@ -2,8 +2,8 @@
 
 import { html, useState } from './lib.js';
 import { navigate } from './nav.js';
-import { useApp, Header, Icon, ProductRow, Empty } from './kit.js';
-import { locationTree } from '../model.js';
+import { useApp, Header, Icon, ProductRow, Empty, SiteBar, siteContext } from './kit.js';
+import { locationTree, siteOf, atSite } from '../model.js';
 
 function usePref(key, initial) {
   const [v, setV] = useState(() => {
@@ -25,7 +25,10 @@ function usePref(key, initial) {
 const byName = (a, b) => a.i.product.name.localeCompare(b.i.product.name);
 const inStockFirst = (a, b) => (a.i.out - b.i.out) || byName(a, b);
 
-function groupByPlace(items, locations) {
+const stripSite = path => (path.includes(' › ') ? path.slice(path.indexOf(' › ') + 3) : path);
+
+/** Rows per location (deepest first-level grouping = your own tree). `within` limits it to one site. */
+function groupByPlace(items, locations, { within = null, strip = false } = {}) {
   const rows = new Map();
   const push = (key, row) => {
     if (!rows.has(key)) rows.set(key, []);
@@ -43,11 +46,13 @@ function groupByPlace(items, locations) {
   }
   const groups = [];
   for (const t of locationTree(locations)) {
-    if (rows.has(t.loc.id)) groups.push({ key: t.loc.id, title: t.path, depth: t.depth, rows: rows.get(t.loc.id) });
+    const here = rows.get(t.loc.id);
     rows.delete(t.loc.id);
+    if (!here || (within && siteOf(locations, t.loc.id) !== within)) continue;
+    groups.push({ key: t.loc.id, title: strip ? stripSite(t.path) : t.path, depth: t.depth, rows: here });
   }
   const rest = [...rows.values()].flat();
-  if (rest.length) groups.push({ key: 'none', title: 'No location', depth: 0, rows: rest });
+  if (rest.length && !within) groups.push({ key: 'none', title: 'No location', depth: 0, rows: rest });
   return groups;
 }
 
@@ -66,9 +71,11 @@ export function Pantry() {
   const [mode, setMode] = usePref('pantry.group', 'place');
   const [attention, setAttention] = useState(false);
 
+  const { multi, siteId } = siteContext(state);
   const needle = q.trim().toLowerCase();
   const items = [...info.values()].filter(i => {
     const p = i.product;
+    if (!atSite(i, siteId)) return false;
     if (attention && !(i.expired || i.soon || i.low || i.out)) return false;
     if (!needle) return true;
     return p.name.toLowerCase().includes(needle) || (p.brand || '').toLowerCase().includes(needle) ||
@@ -78,7 +85,7 @@ export function Pantry() {
   let groups;
   if (mode === 'category') groups = groupByCategory(items, state.categories);
   else if (mode === 'az') groups = [{ key: 'all', title: '', rows: items.map(i => ({ i, qty: null })) }];
-  else groups = groupByPlace(items, state.locations);
+  else groups = groupByPlace(items, state.locations, { within: siteId, strip: !multi || !!siteId });
   for (const g of groups) g.rows.sort(mode === 'az' ? byName : inStockFirst);
 
   const add = html`<button class="icon-btn" aria-label="New product" onClick=${() => navigate('#/new')}><${Icon} name="plus" /></button>`;
@@ -95,8 +102,9 @@ export function Pantry() {
   }
 
   return html`
-    <${Header} title="Pantry" sub=${`${state.products.length} products`} actions=${add} />
+    <${Header} title="Pantry" sub=${`${items.length} products`} actions=${add} />
     <main class="page">
+      <${SiteBar} />
       <label class="search">
         <${Icon} name="search" size=${18} />
         <input type="search" placeholder="Search name, brand or barcode" value=${q} onInput=${e => setQ(e.target.value)} />

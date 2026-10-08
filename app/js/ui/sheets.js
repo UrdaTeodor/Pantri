@@ -2,7 +2,8 @@
 
 import { html, useState } from './lib.js';
 import { ask, showToast, pickSheet, confirmSheet } from './nav.js';
-import { useApp, Stepper, ExpiryPicker, LocationSelect, Thumb, Icon, placeText } from './kit.js';
+import { useApp, Stepper, ExpiryPicker, LocationSelect, Thumb, Icon, placeText, siteContext } from './kit.js';
+import { siteOf } from '../model.js';
 import {
   addStock, count, useStock, wasteBatch, editBatch, applyRate, undo, getState,
 } from '../store.js';
@@ -41,6 +42,8 @@ export function AddStockForm({ p, units = 1, expiry = null, expiryNote = '', sub
   const [qty, setQty] = useState(units);
   const [exp, setExp] = useState(expiry);
   const [loc, setLoc] = useState(p.locationId);
+  // With several sites, stock goes to a place within the product's own site.
+  const within = siteContext(state).multi ? siteOf(state.locations, p.locationId) : null;
   const submit = () => {
     addStock(p.id, { qty, expiry: exp, locationId: loc });
     onDone({ qty });
@@ -54,7 +57,7 @@ export function AddStockForm({ p, units = 1, expiry = null, expiryNote = '', sub
     <${ExpiryPicker} value=${exp} onChange=${setExp} product=${p} now=${now} note=${expiryNote} />
     <div class="field">
       <label>Where is it going?</label>
-      <${LocationSelect} value=${loc} onChange=${setLoc} locations=${state.locations} />
+      <${LocationSelect} value=${loc} onChange=${setLoc} locations=${state.locations} within=${within} />
     </div>
     <button class="btn primary block" onClick=${submit}>${submitLabel || `Add ${qtyText(qty, p.unit)}`}</button>`;
 }

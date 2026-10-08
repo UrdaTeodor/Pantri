@@ -1,21 +1,21 @@
 // More: settings, locations, categories, waste report, backup & restore, help.
 
 import { html, useState, useEffect, useRef } from './lib.js';
-import { navigate, showToast, pickSheet, promptSheet, confirmSheet } from './nav.js';
-import { useApp, Header, Icon, Empty } from './kit.js';
+import { navigate, showToast, pickSheet, promptSheet, confirmSheet, ask } from './nav.js';
+import { useApp, Header, Icon, Empty, siteContext } from './kit.js';
 import { undoToast } from './sheets.js';
-import { locationTree, descendants, wasteSummary, ymd } from '../model.js';
+import { locationTree, descendants, wasteSummary, ymd, siteSettings } from '../model.js';
 import { dateText, dayText, qtyText, fmtNum, ago } from '../format.js';
 import {
   updateSettings, addLocation, renameLocation, moveLocation, shiftLocation, deleteLocation,
   addCategory, renameCategory, deleteCategory, exportJson, importJson, markBackedUp, eraseAll,
-  deleteWasteEvent,
+  deleteWasteEvent, setSiteSchedule,
 } from '../store.js';
 import { isPersisted, requestPersistence } from '../db.js';
 
 const LINKS = [
   ['settings', 'sliders', 'Office hours & settings', 'Office days, closures, warnings, order cycle'],
-  ['locations', 'pin', 'Locations', 'Your own structure: rooms, fridges, shelves…'],
+  ['locations', 'pin', 'Locations & sites', 'Sites (Office, Corp House…), rooms, fridges, shelves'],
   ['categories', 'tag', 'Categories', 'Drinks, snacks, cleaning…'],
   ['waste', 'trash', 'Waste report', 'What got thrown away, and what to buy less of'],
   ['backup', 'shield', 'Backup & restore', 'Save your pantry to a file'],
@@ -61,6 +61,63 @@ export function More() {
 
 const DAYS = [[1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [0, 'Sun']];
 
+/** "Mon–Fri 09:00–18:00", "every day, all day", … */
+function scheduleText(s) {
+  const set = new Set(s.workdays);
+  const days = set.size === 7 ? 'every day'
+    : [1, 2, 3, 4, 5].every(d => set.has(d)) && set.size === 5 ? 'Mon–Fri'
+      : DAYS.filter(([d]) => set.has(d)).map(([, l]) => l).join(', ');
+  const allDay = s.dayEnd <= s.dayStart;
+  return `${days}${allDay ? ', all day' : ` ${s.dayStart}–${s.dayEnd}`}`;
+}
+
+function SiteSchedule({ site, settings, close }) {
+  const cur = site.schedule;
+  const [custom, setCustom] = useState(!!cur);
+  const [days, setDays] = useState((cur && cur.workdays) || settings.workdays);
+  const [start, setStart] = useState((cur && cur.dayStart) || settings.dayStart);
+  const [end, setEnd] = useState((cur && cur.dayEnd) || settings.dayEnd);
+  const [holidays, setHolidays] = useState(cur ? cur.holidays !== false : true);
+  const toggle = d => {
+    const next = days.includes(d) ? days.filter(x => x !== d) : [...days, d].sort();
+    if (next.length) setDays(next);
+  };
+  const save = () => {
+    setSiteSchedule(site.id, custom ? { workdays: days, dayStart: start, dayEnd: end, holidays } : null);
+    showToast(`${site.name}: ${custom ? scheduleText({ workdays: days, dayStart: start, dayEnd: end }) : 'default hours'}`);
+    close(true);
+  };
+  return html`
+    <div class="sheet-pad">
+      <h2>${site.name}: when is it in use?</h2>
+      <p class="muted">Usage estimates for this site only count during these hours.</p>
+      <label class="switch">
+        <input type="checkbox" checked=${!custom} onChange=${e => setCustom(!e.target.checked)} />
+        <span>Same as the default office hours (${scheduleText(settings)})</span>
+      </label>
+      ${custom && html`
+        <div class="field">
+          <label>Days</label>
+          <div class="chips">
+            ${DAYS.map(([d, label]) => html`
+              <button type="button" class=${`chip-btn${days.includes(d) ? ' on' : ''}`} aria-pressed=${days.includes(d)} onClick=${() => toggle(d)}>${label}</button>`)}
+          </div>
+        </div>
+        <div class="two">
+          <div class="field"><label>From</label><input class="input" type="time" value=${start} onChange=${e => e.target.value && setStart(e.target.value)} /></div>
+          <div class="field"><label>Until</label><input class="input" type="time" value=${end} onChange=${e => e.target.value && setEnd(e.target.value)} /></div>
+        </div>
+        <button type="button" class="link-btn" onClick=${() => { setDays([0, 1, 2, 3, 4, 5, 6]); setStart('00:00'); setEnd('00:00'); }}>
+          Used any time (every day, all day)
+        </button>
+        <label class="switch">
+          <input type="checkbox" checked=${holidays} onChange=${e => setHolidays(e.target.checked)} />
+          <span>Office closures (holidays) apply here too</span>
+        </label>`}
+      <button class="btn primary block" onClick=${save}>Save</button>
+    </div>`;
+}
+
 function NumberSetting({ label, hint, value, min = 0, max = 365, onSave }) {
   return html`
     <div class="field">
@@ -98,14 +155,18 @@ export function Settings() {
   };
   const today = ymd(now);
   const closed = s.closed.filter(c => (c.to || c.from) >= today);
+  const { multi } = siteContext(state);
 
   return html`
     <${Header} title="Settings" back="#/more" />
     <main class="page">
       <section class="section">
-        <h2 class="section-title">Office hours</h2>
+        <h2 class="section-title">${multi ? 'Default office hours' : 'Office hours'}</h2>
         <div class="card pad">
-          <p class="hint">Usage rates only count while the office is open, so evenings, weekends and holidays don't "use up" stock.</p>
+          <p class="hint">
+            Usage rates only count while the office is open, so evenings, weekends and holidays don't "use up" stock.
+            ${multi && ' A site can have its own hours: Locations & sites → tap the site.'}
+          </p>
           <div class="field">
             <label>Office days</label>
             <div class="chips">
@@ -182,15 +243,22 @@ export function Locations() {
 
   const add = async (parentId = null) => {
     const parent = parentId && state.locations.find(l => l.id === parentId);
-    const name = await promptSheet({ title: parent ? `New place inside ${parent.name}` : 'New location', placeholder: parent ? 'e.g. Top shelf' : 'e.g. Meeting room' });
+    const name = await promptSheet({
+      title: parent ? `New place inside ${parent.name}` : 'New site (building, flat…)',
+      placeholder: parent ? 'e.g. Top shelf' : 'e.g. Corp House',
+    });
     if (name) addLocation(name, parentId);
   };
 
+  const editHours = site => ask(close => html`<${SiteSchedule} site=${site} settings=${state.settings} close=${close} />`);
+
   const menu = async t => {
     const l = t.loc;
+    const isSite = !l.parentId;
     const v = await pickSheet({
       title: t.path,
       options: [
+        ...(isSite ? [{ label: 'Opening days & hours…', sub: scheduleText(siteSettings(state.settings, l)), value: 'hours' }] : []),
         { label: 'Rename', value: 'rename' },
         { label: 'Add a place inside it', value: 'child' },
         { label: 'Move up', value: 'up' },
@@ -199,7 +267,8 @@ export function Locations() {
         { label: 'Delete', sub: 'Stock and sub-locations move to the parent', value: 'delete', danger: true },
       ],
     });
-    if (v === 'rename') {
+    if (v === 'hours') editHours(l);
+    else if (v === 'rename') {
       const name = await promptSheet({ title: 'Rename', value: l.name });
       if (name) renameLocation(l.id, name);
     } else if (v === 'child') add(l.id);
@@ -223,22 +292,29 @@ export function Locations() {
   };
 
   return html`
-    <${Header} title="Locations" back="#/more" />
+    <${Header} title="Locations & sites" back="#/more" />
     <main class="page">
-      <p class="section-hint">Organise it your way — rooms, fridges, cupboards, shelves, as deep as you like. Tap a location for options.</p>
+      <p class="section-hint">
+        Top-level locations are <b>sites</b> — e.g. Office, Corp House, Vlad's apt. Each site gets its own stock, reminders and
+        reorder list. Inside a site, organise rooms, fridges and shelves as deep as you like. Tap a location for options.
+      </p>
       ${tree.length ? html`
         <div class="card list">
           ${tree.map(t => html`
             <div class="row" key=${t.loc.id} style=${`padding-left:${16 + t.depth * 22}px`}>
-              <span class="row-icon small"><${Icon} name="pin" size=${18} /></span>
+              <span class=${`row-icon${t.depth ? ' small' : ''}`}><${Icon} name=${t.depth ? 'pin' : 'home'} size=${18} /></span>
               <button class="row-main bare-btn" onClick=${() => menu(t)}>
                 <span class="row-title">${t.loc.name}</span>
-                <span class="row-sub">${counts.get(t.loc.id) ? `${counts.get(t.loc.id)} products` : 'empty'}</span>
+                <span class="row-sub">
+                  ${!t.depth && html`<span class="chip info">site</span> `}
+                  ${counts.get(t.loc.id) ? `${counts.get(t.loc.id)} products` : t.depth ? 'empty' : ''}
+                  ${!t.depth && t.loc.schedule ? ` · ${scheduleText(siteSettings(state.settings, t.loc))}` : ''}
+                </span>
               </button>
               <button class="icon-btn" aria-label=${`Add a place inside ${t.loc.name}`} onClick=${() => add(t.loc.id)}><${Icon} name="plus" size=${18} /></button>
             </div>`)}
         </div>` : html`<${Empty} icon="pin" title="No locations yet" />`}
-      <button class="btn block" onClick=${() => add(null)}><${Icon} name="plus" size=${18} /> Add location</button>
+      <button class="btn block" onClick=${() => add(null)}><${Icon} name="plus" size=${18} /> Add a site</button>
     </main>`;
 }
 
@@ -451,6 +527,11 @@ export function Help() {
 
       <h2>Reorder list</h2>
       <p>Lists anything out, at or below its minimum, or running out before your next order (Settings → "I order every … days"). The suggested amount covers usage until the next order plus the minimum, rounded up to whole packs where it helps. Tick an item when ordered; adding stock clears it.</p>
+
+      <h2>Several sites</h2>
+      <p>Top-level locations are sites — e.g. Office, Corp House and Vlad's apt. Each site keeps its own stock, usage rate, reminders and reorder list for a product, so water drunk at the office doesn't use up the water at the flat.</p>
+      <p>With two or more sites, chips at the top of Today, Pantry and Reorder switch between <b>All sites</b> (reminders grouped per site) and a single site. Scanning uses the site you picked. If a barcode is only tracked at another site, one tap starts tracking it here too.</p>
+      <p>Each site can have its own opening hours — Locations & sites → tap the site. For a flat, "every day, all day" is usually right.</p>
 
       <h2>Your data</h2>
       <p>Everything stays on this phone — nothing is uploaded except barcode lookups. Save a backup file regularly (More → Backup & restore).</p>

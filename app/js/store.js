@@ -3,7 +3,7 @@
 import * as db from './db.js';
 import { codeKey } from './codes.js';
 import {
-  defaultSettings, estimate, fifo, rateSuggestion, descendants, parseYmd, startOfDay, DAY,
+  defaultSettings, estimate, fifo, rateSuggestion, descendants, parseYmd, startOfDay, DAY, productSettings, siteOf,
 } from './model.js';
 
 const subs = new Set();
@@ -21,15 +21,18 @@ export function subscribe(fn) {
 }
 
 export function initialState(now) {
+  const office = uid();
   const kitchen = uid();
   return {
     version: 1,
     settings: defaultSettings(),
+    // Top-level locations are sites; add more (e.g. "Corp House") to track each one separately.
     locations: [
-      { id: kitchen, name: 'Kitchen', parentId: null, order: 0 },
+      { id: office, name: 'Office', parentId: null, order: 0 },
+      { id: kitchen, name: 'Kitchen', parentId: office, order: 0 },
       { id: uid(), name: 'Fridge', parentId: kitchen, order: 0 },
       { id: uid(), name: 'Cupboards', parentId: kitchen, order: 1 },
-      { id: uid(), name: 'Storage room', parentId: null, order: 1 },
+      { id: uid(), name: 'Storage room', parentId: office, order: 1 },
     ],
     categories: ['Drinks', 'Coffee & tea', 'Snacks', 'Fridge & dairy', 'Fruit', 'Cleaning', 'Paper & disposables', 'Other']
       .map((name, order) => ({ id: uid(), name, order })),
@@ -37,7 +40,7 @@ export function initialState(now) {
     batches: [],
     events: [],
     shopping: [],
-    meta: { createdAt: now, lastBackupAt: null },
+    meta: { createdAt: now, lastBackupAt: null, siteId: null },
   };
 }
 
@@ -156,7 +159,7 @@ const shelfLife = (expiry, now) => Math.max(0, Math.round((parseYmd(expiry) - st
 
 /** Bake estimated usage into the recorded batch quantities, so later changes start from "now". */
 function materialize(d, p, now) {
-  const est = estimate(p, batchesOf(d, p.id), d.settings, now);
+  const est = estimate(p, batchesOf(d, p.id), productSettings(d, p), now);
   if (est.rate > 0) {
     for (const { batch, qty } of est.per) batch.qty = qty;
     d.batches = d.batches.filter(b => b.productId !== p.id || b.qty > 1e-6);
@@ -188,9 +191,9 @@ export function updateProduct(id, patch) {
   mutate((d, now) => {
     const p = productOf(d, id);
     if (!p) return;
-    if ('rate' in patch && JSON.stringify(patch.rate || null) !== JSON.stringify(p.rate || null)) {
-      materialize(d, p, now); // a new rate applies from now on, not retroactively
-    }
+    const rateChanged = 'rate' in patch && JSON.stringify(patch.rate || null) !== JSON.stringify(p.rate || null);
+    const siteChanged = 'locationId' in patch && siteOf(d.locations, patch.locationId) !== siteOf(d.locations, p.locationId);
+    if (rateChanged || siteChanged) materialize(d, p, now); // new rate / site hours apply from now on, not retroactively
     Object.assign(p, patch);
   });
 }
@@ -256,7 +259,7 @@ export function count(id, qty) {
     d.batches = d.batches.filter(b => b.productId !== id || b.qty > 0);
     log(d, { type: 'count', productId: id, qty, at: now });
     Object.assign(p, { anchorAt: now, countedAt: now, countedQty: qty, touchedAt: now, snoozeUntil: null });
-    return rateSuggestion(p, d.events, d.settings);
+    return rateSuggestion(p, d.events, productSettings(d, p));
   }, { undo: true });
 }
 
@@ -389,9 +392,10 @@ export function renameLocation(id, name) {
 }
 
 export function moveLocation(id, parentId) {
-  mutate(d => {
+  mutate((d, now) => {
     const l = d.locations.find(x => x.id === id);
     if (!l || id === parentId || descendants(d.locations, id).has(parentId)) return;
+    for (const p of d.products) materialize(d, p, now);
     l.parentId = parentId;
     l.order = nextOrder(d.locations.filter(x => x.parentId === parentId && x.id !== id));
   });
@@ -411,15 +415,43 @@ export function shiftLocation(id, dir) {
 
 /** Delete a location; its sub-locations, stock and products move up to its parent. */
 export function deleteLocation(id) {
-  mutate(d => {
+  mutate((d, now) => {
     const l = d.locations.find(x => x.id === id);
     if (!l) return;
+    for (const p of d.products) materialize(d, p, now);
     const parent = l.parentId || null;
     for (const x of d.locations) if (x.parentId === id) x.parentId = parent;
     for (const b of d.batches) if (b.locationId === id) b.locationId = parent;
     for (const p of d.products) if (p.locationId === id) p.locationId = parent;
     d.locations = d.locations.filter(x => x.id !== id);
   }, { undo: true });
+}
+
+/** A site's own opening days/hours for usage estimates (null = same as Settings). */
+export function setSiteSchedule(siteId, schedule) {
+  mutate((d, now) => {
+    const site = d.locations.find(l => l.id === siteId && !l.parentId);
+    if (!site) return;
+    for (const p of d.products) if (siteOf(d.locations, p.locationId) === siteId) materialize(d, p, now);
+    if (schedule) site.schedule = schedule;
+    else delete site.schedule;
+  });
+}
+
+/** Which site the app is showing (null = all sites). */
+export function setCurrentSite(siteId) {
+  mutate(d => {
+    d.meta.siteId = siteId || null;
+  });
+}
+
+/** Start tracking a product at another site: a copy with its own stock, usage and reorder settings. */
+export function copyProductToSite(id, locationId) {
+  const src = getState().products.find(p => p.id === id);
+  if (!src) return null;
+  const keep = ['name', 'brand', 'size', 'imageUrl', 'categoryId', 'unit', 'rate', 'minStock', 'orderQty', 'reorder', 'notes'];
+  const data = Object.fromEntries(keep.map(k => [k, structuredClone(src[k])]));
+  return createProduct({ ...data, barcodes: src.barcodes.map(b => ({ ...b })), locationId }, { qty: 0 });
 }
 
 export function addCategory(name) {
