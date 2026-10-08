@@ -105,11 +105,12 @@ const contexts = [];
 async function device(name, { config = true } = {}) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   contexts.push(context);
-  if (config) {
-    await context.addInitScript(cfg => {
-      globalThis.__PANTRI_CONFIG__ = cfg;
-    }, { SUPABASE_URL: API, SUPABASE_ANON_KEY: KEY, VAPID_PUBLIC_KEY: env.VAPID_PUBLIC_KEY || '' });
-  }
+  // The committed config.js points at the production project: always override it (empty = not set up).
+  await context.addInitScript(cfg => {
+    globalThis.__PANTRI_CONFIG__ = cfg;
+  }, config
+    ? { SUPABASE_URL: API, SUPABASE_ANON_KEY: KEY, VAPID_PUBLIC_KEY: env.VAPID_PUBLIC_KEY || '' }
+    : { SUPABASE_URL: '', SUPABASE_ANON_KEY: '', VAPID_PUBLIC_KEY: '' });
   const page = await context.newPage();
   page.requests = [];
   page.on('request', r => page.requests.push(r.url()));
