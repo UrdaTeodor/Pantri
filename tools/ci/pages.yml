@@ -1,0 +1,62 @@
+# OPTIONAL: automatic deploys with GitHub Actions (instead of `npm run deploy`).
+# Not active while it lives here. To switch it on:
+#   1. gh auth refresh -h github.com -s workflow   (lets git push workflow files)
+#   2. git mv tools/ci/pages.yml .github/workflows/pages.yml && git commit && git push
+#   3. Repo Settings -> Pages -> Build and deployment -> Source: "GitHub Actions"
+#
+# Deploys app/ to GitHub Pages (https://<owner>.github.io/<repo>/).
+# One-time repo setting: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a queued run waits, an in-progress deploy is never cancelled.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # Writes VERSION (content hash) + the precache file list into app/sw.js.
+      # No npm install needed: tools/stamp.mjs has no dependencies and app/vendor/ is committed.
+      - name: Stamp service worker
+        run: |
+          node tools/stamp.mjs
+          node --check app/sw.js
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: app
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

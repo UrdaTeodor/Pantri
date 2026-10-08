@@ -1,0 +1,19 @@
+# Dependencies (app/vendor/ IS committed: the deploy does not run npm)
+node_modules/
+
+# Test / tool output
+test-results/
+playwright-report/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local test screenshots / downloads
+test-output/
