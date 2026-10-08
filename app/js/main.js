@@ -1,7 +1,8 @@
 import { html, render } from './ui/lib.js';
 import { App } from './ui/app.js';
-import { showToast } from './ui/nav.js';
+import { showToast, navigate } from './ui/nav.js';
 import { initStore } from './store.js';
+import { initCloud } from './cloud.js';
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
@@ -35,3 +36,8 @@ function registerServiceWorker() {
 await initStore();
 render(html`<${App} />`, document.getElementById('app'));
 registerServiceWorker();
+// Online backup (only when config.js sets it up): never delays the app, works in the background.
+initCloud({
+  notify: text => showToast(text, { timeout: 10000 }),
+  openAccount: () => navigate('#/account', { replace: true }),
+});

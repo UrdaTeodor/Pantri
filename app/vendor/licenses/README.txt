@@ -4,6 +4,15 @@ preact@11.0.1  MIT  -> preact.module.js, hooks.module.js  (licenses/preact.LICEN
 htm@3.1.1  Apache-2.0  -> htm.module.js  (licenses/htm.LICENSE.txt)
 barcode-detector@3.2.2  MIT  -> barcode-detector.js  (licenses/barcode-detector.LICENSE.txt)
 zxing-wasm@3.1.3  MIT  -> barcode-detector.js (reader glue), zxing_reader.wasm  (licenses/zxing-wasm.LICENSE.txt)
+@supabase/auth-js@2.117.3  MIT  -> supabase.js  (licenses/supabase-auth-js.LICENSE.txt)
+@supabase/functions-js@2.117.3  MIT  -> supabase.js  (licenses/supabase-functions-js.LICENSE.txt)
+@supabase/phoenix@0.4.5  MIT  -> supabase.js  (licenses/supabase-phoenix.LICENSE.txt)
+@supabase/postgrest-js@2.117.3  MIT  -> supabase.js  (licenses/supabase-postgrest-js.LICENSE.txt)
+@supabase/realtime-js@2.117.3  MIT  -> supabase.js  (licenses/supabase-realtime-js.LICENSE.txt)
+@supabase/storage-js@2.117.3  MIT  -> supabase.js  (licenses/supabase-storage-js.LICENSE.txt)
+@supabase/supabase-js@2.117.3  MIT  -> supabase.js  (licenses/supabase-supabase-js.LICENSE.txt)
+iceberg-js@0.8.1  MIT  -> supabase.js  (licenses/iceberg-js.LICENSE.txt)
+tslib@2.8.1  0BSD  -> supabase.js  (licenses/tslib.LICENSE.txt)
 zxing-cpp@a17fd9dc65d6  Apache-2.0  -> compiled into zxing_reader.wasm  (licenses/zxing-cpp.LICENSE.txt)
 
 zxing_reader.wasm sha256 2ebda08a93eea3efcd8399cda6b276e6a0b1de4fec60b4d8988a047de4c6d1ba

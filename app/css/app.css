@@ -346,6 +346,16 @@ textarea.input { resize: vertical; }
 .prose h2 { font-size: 17px; margin: 18px 0 6px; }
 .prose p { color: var(--text); }
 
+/* ---------- account ---------- */
+
+.account-email { margin: 0 0 8px; font-weight: 700; overflow-wrap: anywhere; }
+.account-field { margin-top: 14px; }
+.card-title { font-size: 17px; margin-bottom: 10px; }
+.sync-line { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; }
+.sync-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--ok); }
+.sync-dot.busy { background: var(--info); }
+.sync-dot.warn { background: var(--warn); }
+
 /* ---------- bottom nav ---------- */
 
 .nav {
