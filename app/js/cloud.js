@@ -114,6 +114,9 @@ function client() {
             recovering = true;
             hooks.openAccount();
           }
+          // No session while one is still stored: refreshing it just couldn't reach the server
+          // (e.g. the app started offline). Still signed in; a real sign-out clears the storage.
+          if (!s && storedSession()) return;
           setSession(s);
         }, 0);
       });
@@ -259,6 +262,11 @@ function schedule(delay = DEBOUNCE) {
 }
 
 async function runOnce(opts) {
+  if (offline()) {
+    // No point trying (supabase-js would retry a token refresh for half a minute): the 'online' event resumes.
+    setStatus({ phase: 'offline', message: '' });
+    return;
+  }
   setStatus({ phase: 'syncing', message: '' });
   try {
     const r = await engine.syncOnce(opts);

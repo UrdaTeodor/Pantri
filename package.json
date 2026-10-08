@@ -12,6 +12,8 @@
     "icons": "node tools/make-icons.mjs",
     "check:barcode": "node tools/check-barcode.mjs",
     "e2e": "node tests/smoke.e2e.mjs && node tests/flow.e2e.mjs && node tests/sites.e2e.mjs && node tests/regressions.e2e.mjs",
+    "e2e:cloud": "node tests/cloud.e2e.mjs",
+    "vapid": "node tools/vapid.mjs",
     "deploy": "node tools/deploy.mjs"
   },
   "devDependencies": {
