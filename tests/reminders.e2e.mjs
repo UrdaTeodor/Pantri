@@ -42,7 +42,7 @@ const browser = await chromium.launch({ channel: 'msedge', headless: true });
  * push service (headless Edge can't subscribe); `notifications` grants that permission; `denied` and
  * `noPush` pretend notifications are blocked / Web Push doesn't exist.
  */
-async function open({ config = true, stub = { configured: true, signedIn: true }, fakePush = false, notifications = false, denied = false, noPush = false, userAgent } = {}) {
+async function open({ config = true, stub = { configured: true, signedIn: true }, fakePush = false, notifications = false, denied = false, noPush = false, userAgent, offer = false } = {}) {
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, timezoneId: 'Europe/Berlin',
     ...(userAgent ? { userAgent } : {}),
@@ -50,6 +50,8 @@ async function open({ config = true, stub = { configured: true, signedIn: true }
   if (notifications) await context.grantPermissions(['notifications'], { origin });
   await context.addInitScript(o => {
     if (o.config) window.__PANTRI_CONFIG__ = o.config;
+    // The Today popup that offers reminders is tested on its own (offer: true); elsewhere it stays away.
+    if (!o.offer) localStorage.setItem('pantri-reminder-offer', JSON.stringify({ never: true }));
     if (o.stub) window.__PANTRI_STUB__ = o.stub;
     if (o.denied) Object.defineProperty(Notification, 'permission', { get: () => 'denied' });
     if (o.noPush) delete window.PushManager;
@@ -66,7 +68,7 @@ async function open({ config = true, stub = { configured: true, signedIn: true }
       PushManager.prototype.getSubscription = async () => (localStorage.getItem(KEY) ? make() : null);
       PushManager.prototype.subscribe = async () => { localStorage.setItem(KEY, '1'); return make(); };
     }
-  }, { config: config ? CONFIG : null, stub, fakePush, denied, noPush });
+  }, { config: config ? CONFIG : null, stub, fakePush, denied, noPush, offer });
   const page = await context.newPage();
   page.on('console', m => m.type() === 'error' && !INCOGNITO_PUSH.test(m.text()) && problems.push(`[console] ${m.text()}`));
   page.on('pageerror', e => problems.push(`[pageerror] ${e.message}\n${e.stack}`));
@@ -279,6 +281,82 @@ try {
     await card.locator('button:text("Get them here too")').waitFor();
     await shot(page, 'signed-in-later');
     log('signing in uploads the schedule straight away; this device is offered to join');
+    await page.context().close();
+  }
+  // ---- the popup on the Today screen ----
+  const offerSheet = page => page.locator('.sheet .offer');
+  /** A pantry with products, then the Today screen opened fresh (the popup comes a moment later). */
+  async function todayWithProducts(page) {
+    await page.goto(server.url);
+    await page.locator('.bar h1').first().waitFor();
+    await seed(page);
+    await page.reload();
+    await page.locator('.bar h1').first().waitFor();
+  }
+  {
+    const page = await open({ notifications: true, fakePush: true, offer: true });
+    await page.goto(server.url);
+    await page.locator('.bar h1').first().waitFor();
+    await page.waitForTimeout(2500);
+    assert.equal(await page.locator('.sheet').count(), 0);
+    log('no popup while the pantry is still empty');
+
+    await page.clock.setFixedTime(MONDAY_8AM);
+    await todayWithProducts(page);
+    const offer = offerSheet(page);
+    await offer.locator('h2:text("Get a daily reminder?")').waitFor();
+    assert.match(await text(offer), /One notification at 0?9:00.* on days when something needs checking, has expired or should be used soon/);
+    await shot(page, 'offer');
+    await offer.getByRole('button', { name: 'Turn on reminders' }).click();
+    await page.waitForFunction(() => window.__cloudStub.uploads === 1);
+    await page.locator('.sheet').waitFor({ state: 'detached' });
+    assert.match(await text(page.locator('.toast')), /Daily reminder on, at 0?9:00/);
+    assert.equal(await setting(page, 'remindersOn'), true);
+    assert.equal((await cloud(page)).subscriptions.length, 1);
+    await page.reload();
+    await page.locator('.bar h1').first().waitFor();
+    await page.waitForTimeout(2500);
+    assert.equal(await page.locator('.sheet').count(), 0);
+    log('popup on Today: "Turn on reminders" asks, registers this device and uploads the schedule; no popup after that');
+    await page.context().close();
+  }
+  {
+    const page = await open({ notifications: true, fakePush: true, offer: true });
+    await todayWithProducts(page);
+    await offerSheet(page).getByRole('button', { name: 'Not now' }).click();
+    await page.locator('.sheet').waitFor({ state: 'detached' });
+    const days = await page.evaluate(() => (JSON.parse(localStorage.getItem('pantri-reminder-offer')).until - Date.now()) / 864e5);
+    assert.ok(days > 6.9 && days <= 7, `asked to wait ${days} days`);
+    await page.reload();
+    await page.locator('.bar h1').first().waitFor();
+    await page.waitForTimeout(2500);
+    assert.equal(await page.locator('.sheet').count(), 0);
+    log('"Not now": the popup waits a week');
+    await page.context().close();
+  }
+  {
+    const page = await open({ stub: { configured: true, signedIn: false }, notifications: true, fakePush: true, offer: true });
+    await todayWithProducts(page);
+    const offer = offerSheet(page);
+    assert.match(await text(offer.locator('.hint')), /free Pantri account, which also keeps your pantry backed up online/);
+    await offer.getByRole('button', { name: 'Create an account or sign in' }).click();
+    await page.waitForFunction(() => location.hash === '#/account');
+    await page.evaluate(() => window.__cloudStub.setSignedIn(true));
+    await offerSheet(page).getByRole('button', { name: 'Turn on reminders' }).waitFor();
+    log('signed out: the popup leads to the account screen and comes back with "Turn on reminders" once signed in');
+    await page.context().close();
+  }
+  {
+    const page = await open({ userAgent: IPHONE, offer: true });
+    await todayWithProducts(page);
+    const offer = offerSheet(page);
+    await offer.locator('h2:text("Reminders on iPhone or iPad")').waitFor();
+    assert.match(await text(offer), /add it to your Home Screen: tap Share → Add to Home Screen/);
+    await shot(page, 'offer-iphone');
+    await offer.getByRole('button', { name: "Don't ask again" }).click();
+    await page.locator('.toast:has-text("Settings → Notifications")').waitFor();
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pantri-reminder-offer')).never), true);
+    log('iPhone in Safari: the popup explains Add to Home Screen; "Don\'t ask again" ends the offers');
     await page.context().close();
   }
 } finally {

@@ -108,6 +108,7 @@ async function device(name, { config = true } = {}) {
   // The committed config.js points at the production project: always override it (empty = not set up).
   await context.addInitScript(cfg => {
     globalThis.__PANTRI_CONFIG__ = cfg;
+    localStorage.setItem('pantri-reminder-offer', JSON.stringify({ never: true })); // not testing the popup here
   }, config
     ? { SUPABASE_URL: API, SUPABASE_ANON_KEY: KEY, VAPID_PUBLIC_KEY: env.VAPID_PUBLIC_KEY || '' }
     : { SUPABASE_URL: '', SUPABASE_ANON_KEY: '', VAPID_PUBLIC_KEY: '' });

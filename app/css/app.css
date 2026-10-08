@@ -318,6 +318,10 @@ textarea.input { resize: vertical; }
 .reminder-time { margin: 12px 0 0; }
 .reminder-time .input { width: 150px; }
 .reminder-preview { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
+.offer { text-align: center; }
+.offer-icon { display: grid; place-items: center; width: 56px; height: 56px; margin: 4px auto 12px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); }
+.offer .btn.block + .btn.block { margin-top: 8px; }
+.offer .error { text-align: left; }
 .reminder-preview q { color: var(--text); }
 
 /* ---------- product ---------- */

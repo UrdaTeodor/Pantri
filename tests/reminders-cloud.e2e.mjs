@@ -68,6 +68,7 @@ try {
   await context.grantPermissions(['notifications'], { origin });
   await context.addInitScript(({ cfg, keys }) => {
     globalThis.__PANTRI_CONFIG__ = cfg;
+    localStorage.setItem('pantri-reminder-offer', JSON.stringify({ never: true })); // not testing the popup here
     // A stand-in push service: one subscription per device, kept across page loads like a real one.
     const KEY = 'test-fake-push';
     const make = () => ({

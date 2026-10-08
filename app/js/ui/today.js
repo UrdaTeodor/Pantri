@@ -1,12 +1,14 @@
 // Today: what to check, what's expired, what to use soon — the screen the app opens on.
 
-import { html, useState, useMemo } from './lib.js';
+import { html, useState, useMemo, useEffect } from './lib.js';
 import { navigate, goTab, showToast } from './nav.js';
 import { useApp, Header, Icon, Thumb, Stepper, placeText, SiteBar, siteContext } from './kit.js';
 import { doCount, openWaste, openBatch, openCount, undoToast } from './sheets.js';
 import { todayLists, reorderList, isOpen, addDays, startOfDay, DAY } from '../model.js';
 import { longDate, dayText, qtyText, expiryText, fmtNum } from '../format.js';
 import { snooze, useUpBatch } from '../store.js';
+import { offerReminders } from './reminders.js';
+import { isSignedIn } from '../cloud.js';
 
 function placesOf(state, i) {
   const ids = [...new Set(i.batches.filter(b => b.present || i.out).map(b => b.batch.locationId || null))];
@@ -113,7 +115,7 @@ function Welcome() {
 
 function BackupNudge() {
   const { state, now } = useApp();
-  if (!state.products.length) return null;
+  if (!state.products.length || isSignedIn()) return null; // signed in: it's backed up online
   const last = state.meta.lastBackupAt;
   if (now - (last || state.meta.createdAt) < (last ? 14 : 3) * DAY) return null;
   return html`
@@ -167,6 +169,9 @@ const isQuiet = l => !l.checks.length && !l.expired.length && !l.soon.length;
 
 export function Today() {
   const { state, info, now } = useApp();
+  useEffect(() => {
+    offerReminders(); // the daily-reminder popup, when it applies (see ui/reminders.js)
+  }, []);
   const s = state.settings;
   const { sites, multi, siteId, site, settings } = siteContext(state);
   const grouped = multi && !siteId;

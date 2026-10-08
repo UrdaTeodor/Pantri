@@ -11,6 +11,8 @@ fs.mkdirSync(outDir, { recursive: true });
 const server = await startServer({ port: 0 });
 const browser = await chromium.launch({ channel: 'msedge', headless: true });
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+// The committed config points at the production project: run this test with the online features off.
+await context.addInitScript(() => { globalThis.__PANTRI_CONFIG__ = { SUPABASE_URL: '', SUPABASE_ANON_KEY: '', VAPID_PUBLIC_KEY: '' }; });
 const page = await context.newPage();
 const problems = [];
 page.on('console', m => { if (m.type() === 'error' || m.type() === 'warning') problems.push(`[${m.type()}] ${m.text()}`); });

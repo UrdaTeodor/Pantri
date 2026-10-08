@@ -19,6 +19,8 @@ try {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   await context.grantPermissions(['camera'], { origin: server.url.replace(/\/$/, '') });
   await context.route(/facts\.org\/api/, route => route.fulfill({ status: 404, contentType: 'application/json', body: '{"status":0}' }));
+  // The committed config points at the production project: run this test with the online features off.
+  await context.addInitScript(() => { globalThis.__PANTRI_CONFIG__ = { SUPABASE_URL: '', SUPABASE_ANON_KEY: '', VAPID_PUBLIC_KEY: '' }; });
   await context.addInitScript(() => { navigator.share = async d => { window.__shared = d; }; });
   const page = await context.newPage();
   page.on('console', m => m.type() === 'error' && !/facts\.org\/api/.test(m.location().url || '') && problems.push(m.text()));

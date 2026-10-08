@@ -17,6 +17,8 @@ const browser = await chromium.launch({ channel: 'msedge', headless: true });
 try {
   const context = await browser.newContext({ viewport: { width: 360, height: 760 }, isMobile: true, hasTouch: true, locale: 'ro-RO' });
   await context.route(/facts\.org\/api/, route => route.fulfill({ status: 404, contentType: 'application/json', body: '{"status":0}' }));
+  // The committed config points at the production project: run this test with the online features off.
+  await context.addInitScript(() => { globalThis.__PANTRI_CONFIG__ = { SUPABASE_URL: '', SUPABASE_ANON_KEY: '', VAPID_PUBLIC_KEY: '' }; });
   const page = await context.newPage();
   page.on('console', m => m.type() === 'error' && !/facts\.org\/api/.test(m.location().url || '') && problems.push(m.text()));
   page.on('pageerror', e => problems.push(`${e.message}\n${e.stack}`));

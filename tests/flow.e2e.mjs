@@ -34,6 +34,8 @@ async function newPage(browser, opts = {}) {
     const known = route.request().url().includes('openfoodfacts.org') && route.request().url().includes(COLA.code);
     route.fulfill({ status: known ? 200 : 404, contentType: 'application/json', body: JSON.stringify(known ? COLA : { status: 0 }) });
   });
+  // The committed config points at the production project: run this test with the online features off.
+  await context.addInitScript(() => { globalThis.__PANTRI_CONFIG__ = { SUPABASE_URL: '', SUPABASE_ANON_KEY: '', VAPID_PUBLIC_KEY: '' }; });
   await context.addInitScript(() => {
     window.__shared = null;
     navigator.share = async data => { window.__shared = data; };
