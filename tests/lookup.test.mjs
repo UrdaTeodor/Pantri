@@ -1,7 +1,7 @@
 // Turning an Open Food Facts product into what Pantri keeps: nutrition facts and a category guess.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { nutritionOf, guessCategory } from '../app/js/lookup.js';
+import { nutritionOf, guessCategory, englishIngredients, NUTRITION_VERSION } from '../app/js/lookup.js';
 
 const NOW = Date.UTC(2026, 9, 12);
 
@@ -19,16 +19,48 @@ test('nutrition facts per 100 g, rounded, with Nutri-Score, NOVA, allergens and 
     allergens_tags: ['en:milk', 'en:gluten', 'en:milk'],
   }, 'Open Food Facts', NOW);
   assert.deepEqual(n, {
+    v: NUTRITION_VERSION,
     per: 'g',
     per100: { kcal: 536, kj: 2243, fat: 34.6, saturated: 3.12, carbs: 49, sugars: 0.6, fiber: 4.4, protein: 6.6, salt: 1.29 },
     nutriScore: 'd',
     nova: 4,
     serving: '30 g',
     ingredients: 'Potatoes, sunflower oil, salt.',
+    lang: null, // not known: shown as it is
     allergens: ['milk', 'gluten'],
     source: 'Open Food Facts',
     fetchedAt: NOW,
   });
+});
+
+test('ingredients in English: the English text, else the ingredient list when every item is known, else none yet', () => {
+  const ru = {
+    lang: 'ru',
+    serving_size: '30 г',
+    ingredients_text: 'Вода, сахар, диоксид углерода, краситель (сахарный колер IV), регулятор кислотности (ортофосфорная кислота).',
+    ingredients: [
+      { id: 'en:water', text: 'Вода' }, { id: 'en:sugar', text: 'сахар', percent: 10.6 }, { id: 'en:carbon-dioxide', text: 'диоксид углерода' },
+      { id: 'en:colour', text: 'краситель', ingredients: [{ id: 'en:e150d', text: 'сахарный колер IV' }] },
+      { id: 'en:acidity-regulator', text: 'регулятор кислотности', ingredients: [{ id: 'en:e338', text: 'ортофосфорная кислота' }] },
+    ],
+    allergens_tags: [],
+  };
+  const fromList = nutritionOf(ru);
+  assert.equal(fromList.lang, 'ru');
+  assert.equal(fromList.serving, '30 g');
+  assert.equal(fromList.ingredients, ru.ingredients_text);
+  assert.equal(fromList.ingredientsEn, 'Water, sugar 10.6%, carbon dioxide, colour (E150d), acidity regulator (E338)');
+
+  const unknown = { ...ru, ingredients: [...ru.ingredients, { id: 'ru:что-то-ещё', text: 'что-то ещё' }] };
+  assert.equal(nutritionOf(unknown).ingredientsEn, undefined); // to be translated
+  assert.equal(englishIngredients(unknown.ingredients), null);
+
+  const english = { ...unknown, ingredients_text_en: 'Water, sugar, carbon dioxide, colour (caramel IV), acidity regulator (phosphoric acid).' };
+  assert.equal(nutritionOf(english).ingredientsEn, english.ingredients_text_en);
+
+  const onlyEnglish = nutritionOf({ lang: 'fr', ingredients_text_en: 'Water, salt.' });
+  assert.deepEqual([onlyEnglish.ingredients, onlyEnglish.lang, onlyEnglish.ingredientsEn], ['Water, salt.', 'en', 'Water, salt.']);
+  assert.equal(nutritionOf({ lang: 'en', ingredients_text: 'Water, salt.' }).ingredientsEn, 'Water, salt.');
 });
 
 test('drinks are per 100 ml; energy from kJ when kcal is missing; nothing known means null', () => {

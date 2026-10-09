@@ -471,16 +471,23 @@ textarea.input { resize: vertical; }
 .scanner { position: fixed; inset: 0; background: #000; color: #fff; overflow: hidden; }
 .scanner video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .scan-frame {
+  --corner: #fff;
   position: absolute; left: 50%; top: 42%; width: min(78vw, 360px); height: min(46vw, 210px);
   transform: translate(-50%, -50%); border-radius: 18px;
   box-shadow: 0 0 0 100vmax rgb(0 0 0 / 38%);
   background:
-    linear-gradient(#fff, #fff) top left / 34px 4px, linear-gradient(#fff, #fff) top left / 4px 34px,
-    linear-gradient(#fff, #fff) top right / 34px 4px, linear-gradient(#fff, #fff) top right / 4px 34px,
-    linear-gradient(#fff, #fff) bottom left / 34px 4px, linear-gradient(#fff, #fff) bottom left / 4px 34px,
-    linear-gradient(#fff, #fff) bottom right / 34px 4px, linear-gradient(#fff, #fff) bottom right / 4px 34px;
+    linear-gradient(var(--corner), var(--corner)) top left / 34px 4px, linear-gradient(var(--corner), var(--corner)) top left / 4px 34px,
+    linear-gradient(var(--corner), var(--corner)) top right / 34px 4px, linear-gradient(var(--corner), var(--corner)) top right / 4px 34px,
+    linear-gradient(var(--corner), var(--corner)) bottom left / 34px 4px, linear-gradient(var(--corner), var(--corner)) bottom left / 4px 34px,
+    linear-gradient(var(--corner), var(--corner)) bottom right / 34px 4px, linear-gradient(var(--corner), var(--corner)) bottom right / 4px 34px;
   background-repeat: no-repeat;
+  transition: width .45s ease, height .45s ease, top .45s ease;
 }
+/* The barcode was read: green, with a ✓ that pops in; then the frame turns into the wide date frame. */
+.scan-frame.read { --corner: #4ade80; }
+.scan-ok { position: absolute; inset: 0; display: grid; place-items: center; color: #4ade80; animation: pop .45s ease-out; }
+.scan-ok .icon { filter: drop-shadow(0 2px 6px rgb(0 0 0 / 50%)); }
+@keyframes pop { from { transform: scale(.4); opacity: 0; } 60% { transform: scale(1.15); opacity: 1; } to { transform: scale(1); } }
 .scan-line {
   position: absolute; left: 8%; right: 8%; top: 50%; height: 2px;
   background: #ff5a4f; box-shadow: 0 0 10px #ff5a4f; animation: sweep 1.8s ease-in-out infinite alternate;
@@ -493,7 +500,29 @@ textarea.input { resize: vertical; }
 }
 .scan-title { flex: 1; font-weight: 700; text-align: center; text-shadow: 0 1px 3px rgb(0 0 0 / 60%); }
 .scan-title small { display: block; font-size: 13px; font-weight: 500; opacity: .85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.scan-frame.date { top: 46%; width: min(88vw, 440px); height: min(26vw, 130px); }
+.scan-frame.date { --corner: #fcd34d; top: 46%; width: min(88vw, 440px); height: min(26vw, 130px); }
+.scan-line.across {
+  top: 10%; bottom: 10%; left: 5%; right: auto; width: 2px; height: auto;
+  background: #fcd34d; box-shadow: 0 0 10px #fcd34d; animation: sweep-across 1.6s ease-in-out infinite alternate;
+}
+@keyframes sweep-across { from { left: 5%; } to { left: 95%; } }
+.date-banner {
+  position: absolute; left: 16px; right: 16px; top: calc(46% - min(13vw, 65px) - 92px);
+  display: grid; justify-items: center; gap: 8px; text-align: center; animation: rise .4s ease-out;
+}
+.date-done {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 11px; border-radius: 999px;
+  background: rgb(22 101 52 / 85%); color: #bbf7d0; font-size: 13px; font-weight: 700;
+}
+.date-ask { display: inline-flex; align-items: center; gap: 8px; font-size: 21px; font-weight: 800; text-shadow: 0 1px 5px rgb(0 0 0 / 70%); }
+.date-ask .icon { color: #fcd34d; animation: nudge 1.4s ease-in-out infinite; }
+@keyframes nudge { 0%, 100% { transform: scale(1) rotate(0); } 50% { transform: scale(1.18) rotate(-10deg); } }
+.date-example {
+  position: absolute; left: 16px; right: 16px; top: calc(46% + min(13vw, 65px) + 14px); margin: 0;
+  text-align: center; font-size: 14px; color: #e8e8e8; text-shadow: 0 1px 3px rgb(0 0 0 / 70%); animation: rise .4s ease-out;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.nowrap { white-space: nowrap; }
 .scan-bottom.date { flex-direction: column; }
 .date-controls { display: grid; gap: 10px; justify-items: center; width: 100%; max-width: 420px; }
 .date-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }

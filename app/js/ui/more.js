@@ -580,7 +580,7 @@ export function Help() {
       <p>Each site can have its own opening hours — Locations & sites → tap the site.</p>
 
       <h2>Your data</h2>
-      <p>Everything stays on this phone — nothing is uploaded except barcode lookups${cloudConfigured ? ' and, if you turn on the daily reminder, its upcoming texts (so the server can send them on time)' : ''}. Save a backup file regularly (More → Backup & restore).</p>
+      <p>Everything stays on this phone — nothing is uploaded except barcode lookups${cloudConfigured ? ' and, if you turn on the daily reminder, its upcoming texts (so the server can send them on time)' : ''}. Ingredients listed in another language are put into English by the phone's own translator where it has one, otherwise by the MyMemory translation service (only with online lookups on). Save a backup file regularly (More → Backup & restore).</p>
       ${cloudConfigured && html`<p>Optionally, sign in (More → Account & online backup) to keep a copy online and use the same pantry on several phones. Changes made on two phones at once are settled by keeping the newer ones; the other version stays available under Earlier versions.</p>`}
     </main>`;
 }

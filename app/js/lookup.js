@@ -1,5 +1,6 @@
 // Online product lookup by barcode: Open Food Facts, then its sister databases for non-food items.
-// Food also comes with its nutrition facts.
+// Food also comes with its nutrition facts. English is preferred: the English name and ingredients when
+// the database has them, else the ingredients from its own (English) ingredient list.
 
 import { lookupVariants } from './codes.js';
 
@@ -9,10 +10,13 @@ const SOURCES = [
   ['Open Beauty Facts', 'https://world.openbeautyfacts.org'],
 ];
 const FIELDS = [
-  'product_name', 'product_name_en', 'generic_name', 'brands', 'quantity', 'image_front_small_url', 'image_small_url',
-  'categories_tags', 'nutriments', 'nutriscore_grade', 'nova_group', 'serving_size', 'ingredients_text',
-  'ingredients_text_en', 'allergens_tags',
+  'product_name', 'product_name_en', 'generic_name', 'generic_name_en', 'brands', 'quantity', 'image_front_small_url',
+  'image_small_url', 'categories_tags', 'lang', 'nutriments', 'nutriscore_grade', 'nova_group', 'serving_size',
+  'ingredients', 'ingredients_lc', 'ingredients_text', 'ingredients_text_en', 'allergens_tags',
 ].join(',');
+
+/** Bumped when the nutrition facts gain fields: products with older ones are looked up again. */
+export const NUTRITION_VERSION = 2;
 
 // Our name → the Open Food Facts nutriment, per 100 g (or 100 ml).
 const NUTRIENTS = [
@@ -21,6 +25,35 @@ const NUTRIENTS = [
 ];
 
 const tagText = t => String(t).replace(/^[a-z]{2}:/, '').replace(/-/g, ' ');
+const clean = t => String(t || '').replace(/\s+/g, ' ').trim();
+
+/**
+ * The ingredients in English from the database's own ingredient list, whose ids are English
+ * ("en:sugar"), or null if any of them isn't in that list (then it takes a translation).
+ */
+export function englishIngredients(list) {
+  if (!Array.isArray(list) || !list.length) return null;
+  const names = [];
+  for (const item of list) {
+    const id = item && typeof item.id === 'string' ? item.id : '';
+    if (!id.startsWith('en:')) return null;
+    let name = id.slice(3).replace(/-/g, ' ').replace(/^e(\d)/, 'E$1');
+    if (Array.isArray(item.ingredients) && item.ingredients.length) {
+      const inner = englishIngredients(item.ingredients);
+      if (!inner) return null;
+      name += ` (${inner})`;
+    }
+    const percent = Number(item.percent);
+    if (item.percent !== undefined && Number.isFinite(percent)) name += ` ${Math.round(percent * 10) / 10}%`;
+    names.push(name);
+  }
+  const text = names.join(', ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+// Units in Cyrillic (for "30 г"): written the international way.
+const UNITS = [[/(\d)\s*мл(?![а-яё])/gi, '$1 ml'], [/(\d)\s*кг(?![а-яё])/gi, '$1 kg'], [/(\d)\s*г(?![а-яё])/gi, '$1 g'], [/(\d)\s*л(?![а-яё])/gi, '$1 L']];
+const plainUnits = t => UNITS.reduce((s, [re, to]) => s.replace(re, to), t);
 
 /**
  * The nutrition facts of an Open Food Facts product, or null when it has none: { per: 'g' | 'ml',
@@ -38,17 +71,22 @@ export function nutritionOf(p, source = 'Open Food Facts', now = Date.now()) {
   if (per100.kcal === undefined && per100.kj !== undefined) per100.kcal = Math.round(per100.kj / 4.184);
   const grade = String(p.nutriscore_grade || '').toLowerCase();
   const nova = Number(p.nova_group);
-  const ingredients = String(p.ingredients_text || p.ingredients_text_en || '').replace(/\s+/g, ' ').trim().slice(0, 1500);
+  const lang = String(p.ingredients_lc || p.lang || '').toLowerCase().slice(0, 3);
+  const original = clean(p.ingredients_text).slice(0, 1500);
+  const english = clean(p.ingredients_text_en).slice(0, 1500) || englishIngredients(p.ingredients) || (lang === 'en' ? original : '');
   const allergens = [...new Set((p.allergens_tags || []).map(tagText).filter(Boolean))].slice(0, 20);
   const nutriScore = /^[a-e]$/.test(grade) ? grade : null;
-  if (!Object.keys(per100).length && !nutriScore && !ingredients && !allergens.length) return null;
+  if (!Object.keys(per100).length && !nutriScore && !original && !english && !allergens.length) return null;
   return {
+    v: NUTRITION_VERSION,
     per: /\d\s*(ml|cl|dl|l)\b/i.test(String(p.quantity || '')) ? 'ml' : 'g',
     per100,
     nutriScore,
     nova: nova >= 1 && nova <= 4 ? nova : null,
-    serving: String(p.serving_size || '').trim().slice(0, 40),
-    ingredients,
+    serving: plainUnits(clean(p.serving_size)).slice(0, 40),
+    ingredients: original || english, // as printed (in `lang`)
+    lang: original ? lang || null : 'en',
+    ...(english ? { ingredientsEn: english } : {}), // in English: from the database (a translation is added later)
     allergens,
     source,
     fetchedAt: now,
@@ -62,7 +100,7 @@ async function fetchOne(base, code, signal, source) {
   const j = await res.json();
   const p = j.status === 1 && j.product;
   if (!p) return null;
-  const name = (p.product_name || p.product_name_en || p.generic_name || '').trim();
+  const name = (p.product_name_en || p.product_name || p.generic_name_en || p.generic_name || '').trim();
   const brand = (p.brands || '').split(',')[0].trim();
   if (!name && !brand) return null;
   return {

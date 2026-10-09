@@ -91,7 +91,7 @@ try {
   await page.locator('.sheet button:text("Continue")').click();
   await page.locator(".sheet h2:text(\"Still water 0.5 L isn't tracked at Apartment yet\")").waitFor();
   await page.locator('.sheet .menu-item:has-text("Track it at Apartment")').click();
-  await page.locator('.scan-title:has-text("Now the expiry date")').waitFor();
+  await page.locator('.date-banner:has-text("Now the expiry date")').waitFor();
   await page.locator('.date-controls button:text("Skip")').click(); // nothing printed on the fake camera
   await page.locator('.sheet h2:text("Still water 0.5 L")').waitFor();
   assert.match(await text(page.locator('.sheet .field:has-text("Where is it going?") select')), /^Apartment$/);

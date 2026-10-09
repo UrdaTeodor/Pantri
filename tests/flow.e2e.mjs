@@ -38,6 +38,17 @@ async function newPage(browser, opts = {}) {
     const known = route.request().url().includes('openfoodfacts.org') && route.request().url().includes(COLA.code);
     route.fulfill({ status: known ? 200 : 404, contentType: 'application/json', body: JSON.stringify(known ? COLA : { status: 0 }) });
   });
+  // Translation stub (MyMemory). The browser's own translator is hidden, so the stub is what is used.
+  await context.route(/api\.mymemory\.translated\.net/, route => {
+    const q = new URL(route.request().url()).searchParams.get('q');
+    const translatedText = { 'Вода, сахар, что-то ещё.': 'Water, sugar, something else.' }[q] || q;
+    route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ responseStatus: 200, responseData: { translatedText } }) });
+  });
+  await context.addInitScript(() => {
+    try {
+      delete window.Translator;
+    } catch { /* not there */ }
+  });
   // The committed config points at the production project: run this test with the online features off.
   await context.addInitScript(() => { globalThis.__PANTRI_CONFIG__ = { SUPABASE_URL: '', SUPABASE_ANON_KEY: '', VAPID_PUBLIC_KEY: '' }; });
   await context.addInitScript(() => {
@@ -218,9 +229,12 @@ try {
   await page.locator('.scan-top button[aria-label="Type a barcode"]').click();
   await page.locator('.sheet input[name=v]').fill(COLA.code);
   await page.locator('.sheet button:text("Continue")').click();
-  await page.locator('.scan-frame.date').waitFor();
-  assert.match(await text(page.locator('.scan-title')), /^Now the expiry date$/);
-  assert.match(await text(page.locator('.date-controls')), /(Getting the date reader ready|Hold the printed date inside the frame|Reading)/);
+  await page.locator('.scan-frame.read .scan-ok').waitFor(); // ✓ on the barcode frame first
+  await page.locator('.scan-frame.date').waitFor(); // then the wide date frame
+  assert.equal(await text(page.locator('.scan-title')), 'Expiry date');
+  assert.match(await text(page.locator('.date-banner')), /^Barcode read\s*Now the expiry date$/);
+  assert.match(await text(page.locator('.date-example')), /Hold the printed date inside the frame, e\.g\. EXP 12\.05\.2027/);
+  assert.match(await text(page.locator('.date-controls')), /(Getting the date reader ready|Looking for a date|Reading)/);
   await shot(page, 'date-step');
   await page.locator('.date-controls button:text("This product has no date")').click();
   await page.locator('.lookup:has-text("Found on Open Food Facts")').waitFor();
@@ -259,6 +273,25 @@ try {
   assert.match(await text(nutrition), /From Open Food Facts/);
   await nutrition.scrollIntoViewIfNeeded();
   await shot(page, 'nutrition');
+
+  // Ingredients in another language are put into English once, and kept; the original is a tap away.
+  await page.evaluate(async id => {
+    const store = await import('./js/store.js');
+    const p = store.getState().products.find(x => x.id === id);
+    const { ingredientsEn, ...rest } = p.nutrition;
+    store.updateProduct(id, { nutrition: { ...rest, ingredients: 'Вода, сахар, что-то ещё.', lang: 'ru' } });
+  }, (await cola()).id);
+  await page.waitForFunction(async () => {
+    const p = (await import('./js/store.js')).getState().products.find(x => x.name === 'Coca-Cola Original');
+    return p.nutrition.ingredientsEn === 'Water, sugar, something else.' && p.nutrition.translated === true;
+  });
+  await nutrition.locator('details.ingredients summary').click();
+  assert.equal(await text(nutrition.locator('details.ingredients p').first()), 'Water, sugar, something else.');
+  assert.match(await text(nutrition.locator('details.ingredients .hint')), /^Translated automatically from Russian · Show the Russian$/);
+  await nutrition.locator('details.ingredients button:text("Show the Russian")').click();
+  assert.equal(await text(nutrition.locator('details.ingredients p').first()), 'Вода, сахар, что-то ещё.');
+  await shot(page, 'translated');
+  log('ingredients in Russian were translated into English once and kept ("Translated automatically from Russian · Show the Russian")');
   await page.goto(`${server.url}#/edit/${(await cola()).id}`);
   assert.equal(await page.getByLabel('After scanning it, read the expiry date').isChecked(), false);
   await page.getByLabel('After scanning it, read the expiry date').check();

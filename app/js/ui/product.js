@@ -9,9 +9,10 @@ import {
 } from '../model.js';
 import { qtyText, rateText, dayText, ago, expiryText, fmtNum, PER_LABEL, plural } from '../format.js';
 import {
-  applyRate, dismissRateHint, deleteProduct, setReorder, setOrdered, copyProductToSite, updateProduct,
+  applyRate, dismissRateHint, deleteProduct, setReorder, setOrdered, copyProductToSite, updateProduct, getState,
 } from '../store.js';
-import { lookupNutrition } from '../lookup.js';
+import { lookupNutrition, NUTRITION_VERSION } from '../lookup.js';
+import { toEnglish, languageName } from '../translate.js';
 
 const EVENT_TEXT = {
   add: (e, u) => `Added ${qtyText(e.qty, u)}${e.initial ? ' (first stock)' : ''}`,
@@ -46,15 +47,19 @@ const NUTRIENT_ROWS = [
 ];
 const NOVA = { 1: 'unprocessed', 2: 'culinary ingredient', 3: 'processed', 4: 'ultra-processed' };
 const lookedUp = new Set(); // products whose nutrition facts were fetched by themselves this app run
+const translating = new Set(); // products whose ingredients are being put into English
 
 /**
- * Nutrition facts from Open Food Facts. Products scanned before they were kept get them looked up once,
- * by themselves (when online lookups are on); otherwise a button does it.
+ * Nutrition facts from Open Food Facts. Products scanned before they were kept (or kept in an older
+ * form) get them looked up once, by themselves, when online lookups are on; otherwise a button does it.
+ * Ingredients in another language are translated into English once, and kept.
  */
 function Nutrition({ p, now }) {
   const { state } = useApp();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [original, setOriginal] = useState(false); // show the ingredients as printed
+  const [, setTranslating] = useState(false);
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
   const codes = p.barcodes.map(b => b.code);
@@ -67,12 +72,29 @@ function Nutrition({ p, now }) {
       .finally(() => alive.current && setBusy(false));
   };
   useEffect(() => {
-    if (p.nutrition !== undefined || !codes.length || !state.settings.lookup || lookedUp.has(p.id)) return;
+    const stale = p.nutrition === undefined || (p.nutrition && p.nutrition.v !== NUTRITION_VERSION);
+    if (!stale || !codes.length || !state.settings.lookup || lookedUp.has(p.id)) return;
     lookedUp.add(p.id);
     fetchNow();
   }, [p.id]);
 
   const n = p.nutrition;
+  const foreign = !!(n && n.ingredients && n.lang && n.lang !== 'en');
+  useEffect(() => {
+    if (!foreign || n.ingredientsEn || translating.has(p.id)) return;
+    translating.add(p.id);
+    setTranslating(true);
+    toEnglish(n.ingredients, n.lang, { online: state.settings.lookup })
+      .then(english => {
+        const current = getState().products.find(x => x.id === p.id);
+        if (!english || !current || !current.nutrition || current.nutrition.ingredients !== n.ingredients) return;
+        updateProduct(p.id, { nutrition: { ...current.nutrition, ingredientsEn: english, translated: true } });
+      })
+      .finally(() => {
+        translating.delete(p.id);
+        if (alive.current) setTranslating(false);
+      });
+  }, [p.id, n && n.ingredients, foreign]);
   if (!n) {
     if (!codes.length || n === null) return null; // nothing to look up, or nothing found
     return html`
@@ -105,7 +127,15 @@ function Nutrition({ p, now }) {
           </table>`}
         ${n.serving && html`<p class="hint">Serving: ${n.serving}</p>`}
         ${n.allergens && n.allergens.length > 0 && html`<p class="nutri-allergens"><b>Allergens:</b> ${n.allergens.join(', ')}</p>`}
-        ${n.ingredients && html`<details class="ingredients"><summary>Ingredients</summary><p>${n.ingredients}</p></details>`}
+        ${(n.ingredientsEn || n.ingredients) && html`
+          <details class="ingredients">
+            <summary>Ingredients</summary>
+            <p lang=${original || !n.ingredientsEn ? n.lang || null : 'en'}>${original || !n.ingredientsEn ? n.ingredients : n.ingredientsEn}</p>
+            ${foreign && html`
+              <p class="hint">${n.ingredientsEn
+                ? html`${n.translated ? `Translated automatically from ${languageName(n.lang)}` : `In English from ${n.source || 'Open Food Facts'}`} · <button class="link-btn inline" onClick=${() => setOriginal(!original)}>${original ? 'Show in English' : `Show the ${languageName(n.lang)}`}</button>`
+                : translating.has(p.id) ? `In ${languageName(n.lang)}: translating…` : `In ${languageName(n.lang)}: no English translation yet (it is tried again when online).`}</p>`}
+          </details>`}
         <p class="hint">From ${n.source || 'Open Food Facts'} · ${ago(n.fetchedAt, now)}
           <button class="link-btn inline" disabled=${busy} onClick=${fetchNow}>${busy ? 'Updating…' : failed ? 'Offline? Try again' : 'Update'}</button></p>
       </div>

@@ -93,7 +93,7 @@ function NewSheet({ code, expiry, expiryNote, noExpiry, restock, close }) {
 
 /** What the date step says at the bottom of the screen, with its buttons. */
 function DateControls({ reading, slow, onSkip, onNever }) {
-  let text = 'Hold the printed date inside the frame.';
+  let text = 'Looking for a date…';
   if (reading.phase === 'loading') {
     text = `Getting the date reader ready… ${Math.round((reading.progress || 0) * 100)}%`;
   } else if (reading.phase === 'error') {
@@ -124,6 +124,7 @@ export function ScanScreen({ route }) {
   const live = useRef(false);
   live.current = cam.phase === 'live';
   const [tally, setTally] = useState([]);
+  const [justRead, setJustRead] = useState(false); // the barcode was read: the frame shows ✓ before the date step
   const [dateStep, setDateStep] = useState(null); // { name, finish } while reading the expiry date
   const [reading, setReading] = useState({ phase: 'loading', progress: 0 });
   const [slow, setSlow] = useState(false);
@@ -214,6 +215,10 @@ export function ScanScreen({ route }) {
     let expiryNote = printed ? 'read from barcode' : '';
     let noExpiry = false;
     if (!expiry && live.current && getState().settings.scanExpiry !== false && !(found && found.product.noExpiry)) {
+      // A moment of "✓" on the barcode frame, then it turns into the date frame.
+      setJustRead(true);
+      await new Promise(r => setTimeout(r, 700));
+      setJustRead(false);
       const r = await readDate(found ? found.product.name : '');
       if (r.expiry) {
         expiry = r.expiry;
@@ -295,14 +300,22 @@ export function ScanScreen({ route }) {
   return html`
     <div class="scanner">
       <video ref=${video} playsinline muted autoplay></video>
-      ${cam.phase === 'live' && (dateStep
-        ? html`<div class="scan-frame date" ref=${frame} aria-hidden="true"></div>`
-        : html`<div class="scan-frame" aria-hidden="true"><span class="scan-line"></span></div>`)}
+      ${cam.phase === 'live' && html`
+        <div class=${`scan-frame${dateStep ? ' date' : ''}${justRead ? ' read' : ''}`} ref=${frame} aria-hidden="true">
+          ${justRead ? html`<span class="scan-ok"><${Icon} name="check" size=${48} /></span>`
+            : html`<span class=${`scan-line${dateStep ? ' across' : ''}`}></span>`}
+        </div>`}
+      ${dateStep && html`
+        <div class="date-banner" role="status">
+          <span class="date-done"><${Icon} name="check" size=${15} /> Barcode read</span>
+          <span class="date-ask"><${Icon} name="calendar" size=${26} /> Now the expiry date</span>
+        </div>
+        <p class="date-example">Hold the printed date inside the frame, e.g. <b class="nowrap">EXP 12.05.2027</b></p>`}
       <div class="scan-top">
         <button class="icon-btn on-dark" aria-label="Close scanner" onClick=${leave}><${Icon} name="x" /></button>
         <div class="scan-title">
           ${dateStep
-            ? html`Now the expiry date${dateStep.name && html`<small>${dateStep.name}</small>`}`
+            ? html`Expiry date${dateStep.name && html`<small>${dateStep.name}</small>`}`
             : restock ? 'Restock — scan each item' : 'Scan a barcode'}
           ${!dateStep && ctx.multi && html`<button class="site-pill" onClick=${chooseSite}><${Icon} name="pin" size=${14} /> ${ctx.site ? ctx.site.name : 'All sites'}</button>`}
         </div>
