@@ -263,6 +263,11 @@ export function Settings() {
             <input type="checkbox" checked=${s.scanSound} onChange=${e => updateSettings({ scanSound: e.target.checked })} />
             <span>Beep when a barcode is read</span>
           </label>
+          <label class="switch">
+            <input type="checkbox" checked=${s.scanExpiry !== false} onChange=${e => updateSettings({ scanExpiry: e.target.checked })} />
+            <span>After a barcode, read the expiry date with the camera</span>
+          </label>
+          <p class="hint">Hold the printed date in the frame, or tap Skip. You check the date before saving. Products without a date can be left out: "This product has no date".</p>
         </div>
       </section>
     </main>`;
@@ -560,6 +565,7 @@ export function Help() {
       <h2>Expiry dates</h2>
       <p>Every delivery is its own batch with its own date, so new stock never hides old stock. Usage is assumed to take the earliest-expiring items first. <b>Use soon</b> lists batches close to their date — and flags ones that, at the current pace, won't be used in time.</p>
       <p>When the quick buttons don't match, type the exact date. If a product has a GS1 DataMatrix code with an expiry date, scanning it fills the date in.</p>
+      <p>After a barcode, the camera tries to read the printed date: hold it inside the wide frame. It reads plain and dotted prints like 12.05.2027, 05/27 or 12 MAY 2027, and skips production dates when they are labelled. Check the date it found before saving; tap <b>Skip</b> when there is none, or <b>This product has no date</b> so it isn't asked again (Settings → Scanning switches the step off).</p>
 
       <h2>Scanning</h2>
       <p>The first scan of a barcode looks it up on Open Food Facts and asks for the details once. After that, scanning opens the product: add stock, count, or log something as thrown away. Set "units per scan" for multipacks (a six-pack = 6 bottles). Scan a different pack of the same thing? Use "link it" to attach the new barcode to the existing product.</p>

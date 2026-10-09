@@ -1,16 +1,20 @@
-// Scanner: live camera → barcode → add / count / remove (known product) or create (new barcode).
-// Restock mode (#/scan?mode=restock) keeps scanning after each item, for unpacking a delivery.
+// Scanner: live camera → barcode → the expiry date, read off the package (unless switched off) → add /
+// count / remove (known product) or create (new barcode). Restock mode (#/scan?mode=restock) keeps
+// scanning after each item, for unpacking a delivery.
 
 import { html, useState, useEffect, useRef } from './lib.js';
 import { ask, goBack, navigate, promptSheet, pickSheet, showToast } from './nav.js';
 import { useApp, Icon, Thumb, placeText, siteContext, siteName } from './kit.js';
 import { AddStockForm, CountForm, UseForm, chooseAndWaste, undoToast } from './sheets.js';
 import { ProductForm } from './product-form.js';
-import { createDetector } from '../barcode.js';
+import { useCamera, useBarcodeReader } from './camera.js';
+import { watchForDate } from '../datescan.js';
 import { interpretScan } from '../codes.js';
 import { findAllByCode, siteOf } from '../model.js';
-import { qtyText } from '../format.js';
-import { getState, copyProductToSite, setCurrentSite } from '../store.js';
+import { qtyText, dateText } from '../format.js';
+import { getState, copyProductToSite, setCurrentSite, updateProduct } from '../store.js';
+
+const READ_FROM_PACKAGE = 'read from the package — check it';
 
 let audio = null;
 function beep(on) {
@@ -27,25 +31,8 @@ function beep(on) {
   } catch { /* no sound, no problem */ }
 }
 
-function cameraError(e) {
-  switch (e && e.name) {
-    case 'NotAllowedError':
-    case 'SecurityError':
-      return 'Camera access is blocked. Allow the camera for this app in the browser\'s site settings — or type the barcode.';
-    case 'NotFoundError':
-    case 'OverconstrainedError':
-      return 'No camera found. You can type barcodes instead.';
-    case 'NotReadableError':
-      return 'The camera is busy in another app. Close that app and try again.';
-    case 'Insecure':
-      return 'The camera only works when the app is opened over HTTPS (or on localhost).';
-    default:
-      return `Couldn't start the scanner: ${(e && (e.message || e.name)) || 'unknown error'}`;
-  }
-}
-
 /** Sheet for a barcode we already know. */
-function KnownSheet({ productId, units, expiry, restock, close }) {
+function KnownSheet({ productId, units, expiry, expiryNote, restock, close }) {
   const { state, info } = useApp();
   const [tab, setTab] = useState('add');
   const i = info.get(productId);
@@ -66,7 +53,7 @@ function KnownSheet({ productId, units, expiry, restock, close }) {
           <button role="tab" aria-selected=${tab === k} class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${label}</button>`)}
       </div>
       ${tab === 'add' && html`
-        <${AddStockForm} p=${p} units=${units} expiry=${expiry} expiryNote=${expiry ? 'read from barcode' : ''}
+        <${AddStockForm} p=${p} units=${units} expiry=${expiry} expiryNote=${expiryNote}
           submitLabel=${restock ? 'Add & scan next' : ''}
           onDone=${({ qty }) => {
             undoToast(`Added ${qtyText(qty, p.unit)} · ${p.name}`);
@@ -84,7 +71,7 @@ function KnownSheet({ productId, units, expiry, restock, close }) {
 }
 
 /** Full-screen sheet for a new barcode. */
-function NewSheet({ code, expiry, restock, close }) {
+function NewSheet({ code, expiry, expiryNote, noExpiry, restock, close }) {
   return html`
     <div class="sheet-full-inner">
       <header class="bar">
@@ -92,7 +79,8 @@ function NewSheet({ code, expiry, restock, close }) {
         <div class="bar-title"><h1>New product</h1></div>
       </header>
       <div class="page">
-        <${ProductForm} code=${code} scanExpiry=${expiry} submitLabel=${restock ? 'Save & scan next' : ''}
+        <${ProductForm} code=${code} scanExpiry=${expiry} scanExpiryNote=${expiryNote} noExpiry=${noExpiry}
+          submitLabel=${restock ? 'Save & scan next' : ''}
           onSaved=${(id, qty) => {
             const p = getState().products.find(x => x.id === id);
             showToast(`Saved ${p.name}`);
@@ -103,17 +91,42 @@ function NewSheet({ code, expiry, restock, close }) {
     </div>`;
 }
 
+/** What the date step says at the bottom of the screen, with its buttons. */
+function DateControls({ reading, slow, onSkip, onNever }) {
+  let text = 'Hold the printed date inside the frame.';
+  if (reading.phase === 'loading') {
+    text = `Getting the date reader ready… ${Math.round((reading.progress || 0) * 100)}%`;
+  } else if (reading.phase === 'error') {
+    text = "The date reader didn't load (offline?). Skip, and pick the date on the next screen.";
+  } else if (reading.seen) {
+    text = `Reading… ${dateText(new Date(`${reading.seen}T00:00`).getTime(), Date.now())}?`;
+  } else if (slow) {
+    text = "Can't read it? Move closer, use the light, or skip.";
+  }
+  return html`
+    <div class="date-controls">
+      <p class="scan-hint" role="status">${text}</p>
+      <div class="date-actions">
+        <button class="btn" onClick=${onSkip}>Skip</button>
+        <button class="link-btn on-dark" onClick=${onNever}>This product has no date</button>
+      </div>
+    </div>`;
+}
+
 export function ScanScreen({ route }) {
   const { state } = useApp();
   const restock = route.query.get('mode') === 'restock';
   const video = useRef(null);
-  const track = useRef(null);
+  const frame = useRef(null);
   const paused = useRef(false);
   const last = useRef({ code: '', at: 0 });
-  const [phase, setPhase] = useState('starting'); // starting | live | error
-  const [error, setError] = useState('');
-  const [torch, setTorch] = useState(null); // null = not supported
+  const cam = useCamera(video);
+  const live = useRef(false);
+  live.current = cam.phase === 'live';
   const [tally, setTally] = useState([]);
+  const [dateStep, setDateStep] = useState(null); // { name, finish } while reading the expiry date
+  const [reading, setReading] = useState({ phase: 'loading', progress: 0 });
+  const [slow, setSlow] = useState(false);
 
   const resume = () => {
     last.current.at = Date.now(); // ignore the code still in view for a moment
@@ -121,6 +134,46 @@ export function ScanScreen({ route }) {
   };
 
   const leave = () => goBack('#/');
+
+  useEffect(() => {
+    try {
+      audio = audio || new AudioContext();
+      audio.resume();
+    } catch { audio = null; }
+  }, []);
+
+  // The date step: read the video until a date can be trusted, or the user skips.
+  useEffect(() => {
+    if (!dateStep) return undefined;
+    setReading({ phase: 'loading', progress: 0 });
+    return watchForDate({
+      video: video.current,
+      frame: () => frame.current,
+      onState: setReading,
+      onDate: date => {
+        beep(getState().settings.scanSound);
+        dateStep.finish({ expiry: date });
+      },
+    });
+  }, [dateStep]);
+  const readingNow = !!dateStep && reading.phase === 'reading';
+  useEffect(() => {
+    setSlow(false);
+    if (!readingNow) return undefined;
+    const timer = setTimeout(() => setSlow(true), 10000);
+    return () => clearTimeout(timer);
+  }, [readingNow]);
+
+  /** Resolves to { expiry } (read), { skip: true } or { never: true } (this product has no date). */
+  const readDate = name => new Promise(resolve => {
+    setDateStep({
+      name,
+      finish: result => {
+        setDateStep(null);
+        resolve(result);
+      },
+    });
+  });
 
   /** Which product a scanned code means here. With several sites, products are per site. */
   async function resolveProduct(code) {
@@ -153,17 +206,32 @@ export function ScanScreen({ route }) {
   }
 
   async function handleCode(raw) {
-    const { code, expiry } = interpretScan(raw);
+    const { code, expiry: printed } = interpretScan(raw);
     if (!code) return resume();
     const found = await resolveProduct(code);
     if (found === 'cancel') return resume();
+    let expiry = printed;
+    let expiryNote = printed ? 'read from barcode' : '';
+    let noExpiry = false;
+    if (!expiry && live.current && getState().settings.scanExpiry !== false && !(found && found.product.noExpiry)) {
+      const r = await readDate(found ? found.product.name : '');
+      if (r.expiry) {
+        expiry = r.expiry;
+        expiryNote = READ_FROM_PACKAGE;
+      } else if (r.never && found) {
+        updateProduct(found.product.id, { noExpiry: true });
+        showToast(`No date step for ${found.product.name} from now on. Edit the product to change that.`, { timeout: 6000 });
+      } else if (r.never) {
+        noExpiry = true;
+      }
+    }
     let result;
     if (found) {
-      result = await ask(close => html`<${KnownSheet} productId=${found.product.id} units=${found.units} expiry=${expiry} restock=${restock} close=${close} />`);
+      result = await ask(close => html`<${KnownSheet} productId=${found.product.id} units=${found.units} expiry=${expiry} expiryNote=${expiryNote} restock=${restock} close=${close} />`);
     } else {
-      result = await ask(close => html`<${NewSheet} code=${code} expiry=${expiry} restock=${restock} close=${close} />`, { full: true });
+      result = await ask(close => html`<${NewSheet} code=${code} expiry=${expiry} expiryNote=${expiryNote} noExpiry=${noExpiry} restock=${restock} close=${close} />`, { full: true });
       if (result && result.linked) {
-        result = await ask(close => html`<${KnownSheet} productId=${result.linked.id} units=${result.linked.units} expiry=${expiry} restock=${restock} close=${close} />`);
+        result = await ask(close => html`<${KnownSheet} productId=${result.linked.id} units=${result.linked.units} expiry=${expiry} expiryNote=${expiryNote} restock=${restock} close=${close} />`);
       }
     }
     if (result && result.open) return navigate(`#/product/${result.open}`, { replace: true });
@@ -182,77 +250,11 @@ export function ScanScreen({ route }) {
     handleCode(raw);
   };
 
-  useEffect(() => {
-    let stopped = false;
-    let timer = 0;
-    let stream = null;
-    try {
-      audio = audio || new AudioContext();
-      audio.resume();
-    } catch { audio = null; }
-    (async () => {
-      try {
-        if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          throw Object.assign(new Error('insecure'), { name: 'Insecure' });
-        }
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
-        });
-        if (stopped) {
-          stream.getTracks().forEach(t => t.stop()); // closed while the camera was starting
-          return;
-        }
-        const v = video.current;
-        v.srcObject = stream;
-        await v.play();
-        const t = stream.getVideoTracks()[0];
-        track.current = t;
-        const caps = (t.getCapabilities && t.getCapabilities()) || {};
-        if (caps.torch) setTorch(false);
-        if (caps.focusMode && caps.focusMode.includes('continuous')) {
-          t.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
-        }
-        let detector;
-        try {
-          detector = await createDetector();
-        } catch (e) {
-          throw new Error(`the barcode reader didn't load (${e.message})`);
-        }
-        if (stopped) return;
-        setPhase('live');
-        const loop = async () => {
-          if (stopped) return;
-          if (!paused.current && v.readyState >= 2) {
-            try {
-              const codes = await detector.detect(v);
-              if (codes.length && !stopped) onDetected(codes[0].rawValue);
-            } catch { /* frame not ready */ }
-          }
-          timer = setTimeout(loop, 120);
-        };
-        loop();
-      } catch (e) {
-        if (stopped) return;
-        setError(cameraError(e));
-        setPhase('error');
-      }
-    })();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-      if (stream) stream.getTracks().forEach(t => t.stop());
-    };
-  }, []);
-
-  const toggleTorch = async () => {
-    try {
-      await track.current.applyConstraints({ advanced: [{ torch: !torch }] });
-      setTorch(!torch);
-    } catch {
-      setTorch(null);
-    }
-  };
+  useBarcodeReader(video, cam.phase === 'live', {
+    active: () => !paused.current,
+    onCode: onDetected,
+    onError: e => cam.fail(`Couldn't start the scanner: ${e.message}`),
+  });
 
   const typeCode = async () => {
     paused.current = true;
@@ -275,38 +277,48 @@ export function ScanScreen({ route }) {
     resume();
   };
 
+  let bottom = null;
+  if (dateStep) {
+    bottom = html`<${DateControls} reading=${reading} slow=${slow}
+      onSkip=${() => dateStep.finish({ skip: true })} onNever=${() => dateStep.finish({ never: true })} />`;
+  } else if (tally.length > 0) {
+    bottom = html`
+      <div class="tally">
+        <b>${tally.length} scanned · ${added} units added</b>
+        <span>${tally.slice(-3).reverse().map(x => `${x.qty} × ${x.name}`).join(' · ')}</span>
+      </div>
+      <button class="btn primary" onClick=${leave}>Done</button>`;
+  } else if (cam.phase === 'live') {
+    bottom = html`<p class="scan-hint">Hold the barcode inside the frame. No barcode? <button class="link-btn on-dark inline" onClick=${() => navigate('#/new', { replace: true })}>Add it by hand</button></p>`;
+  }
+
   return html`
     <div class="scanner">
       <video ref=${video} playsinline muted autoplay></video>
-      ${phase === 'live' && html`<div class="scan-frame" aria-hidden="true"><span class="scan-line"></span></div>`}
+      ${cam.phase === 'live' && (dateStep
+        ? html`<div class="scan-frame date" ref=${frame} aria-hidden="true"></div>`
+        : html`<div class="scan-frame" aria-hidden="true"><span class="scan-line"></span></div>`)}
       <div class="scan-top">
         <button class="icon-btn on-dark" aria-label="Close scanner" onClick=${leave}><${Icon} name="x" /></button>
         <div class="scan-title">
-          ${restock ? 'Restock — scan each item' : 'Scan a barcode'}
-          ${ctx.multi && html`<button class="site-pill" onClick=${chooseSite}><${Icon} name="pin" size=${14} /> ${ctx.site ? ctx.site.name : 'All sites'}</button>`}
+          ${dateStep
+            ? html`Now the expiry date${dateStep.name && html`<small>${dateStep.name}</small>`}`
+            : restock ? 'Restock — scan each item' : 'Scan a barcode'}
+          ${!dateStep && ctx.multi && html`<button class="site-pill" onClick=${chooseSite}><${Icon} name="pin" size=${14} /> ${ctx.site ? ctx.site.name : 'All sites'}</button>`}
         </div>
-        ${torch !== null && html`
-          <button class=${`icon-btn on-dark${torch ? ' lit' : ''}`} aria-label="Torch" aria-pressed=${torch} onClick=${toggleTorch}>
+        ${cam.torch !== null && html`
+          <button class=${`icon-btn on-dark${cam.torch ? ' lit' : ''}`} aria-label="Torch" aria-pressed=${cam.torch} onClick=${cam.toggleTorch}>
             <${Icon} name="bolt" />
           </button>`}
-        <button class="icon-btn on-dark" aria-label="Type a barcode" onClick=${typeCode}><${Icon} name="keyboard" /></button>
+        ${!dateStep && html`<button class="icon-btn on-dark" aria-label="Type a barcode" onClick=${typeCode}><${Icon} name="keyboard" /></button>`}
       </div>
-      ${phase === 'starting' && html`<div class="scan-msg">Starting camera…</div>`}
-      ${phase === 'error' && html`
+      ${cam.phase === 'starting' && html`<div class="scan-msg">Starting camera…</div>`}
+      ${cam.phase === 'error' && html`
         <div class="scan-error">
-          <p>${error}</p>
+          <p>${cam.error}</p>
           <button class="btn primary" onClick=${typeCode}><${Icon} name="keyboard" size=${18} /> Type a barcode</button>
           <button class="btn" onClick=${() => navigate('#/new', { replace: true })}>Add without barcode</button>
         </div>`}
-      <div class="scan-bottom">
-        ${tally.length > 0
-          ? html`
-            <div class="tally">
-              <b>${tally.length} scanned · ${added} units added</b>
-              <span>${tally.slice(-3).reverse().map(x => `${x.qty} × ${x.name}`).join(' · ')}</span>
-            </div>
-            <button class="btn primary" onClick=${leave}>Done</button>`
-          : phase === 'live' && html`<p class="scan-hint">Hold the barcode inside the frame. No barcode? <button class="link-btn on-dark inline" onClick=${() => navigate('#/new', { replace: true })}>Add it by hand</button></p>`}
-      </div>
+      <div class=${`scan-bottom${dateStep ? ' date' : ''}`}>${bottom}</div>
     </div>`;
 }

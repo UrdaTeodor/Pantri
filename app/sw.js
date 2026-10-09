@@ -11,6 +11,8 @@
  * Both modes: Open Food Facts images (images.openfoodfacts.org) are cache-first in
  * `pantry-images` (oldest evicted beyond IMAGE_CACHE_MAX); every other cross-origin request
  * (e.g. the Open Food Facts API) is not touched: straight to the network, never cached.
+ * The OCR engine in vendor/ocr/ (about 6 MB, for reading expiry dates) is not precached: it is
+ * fetched the first time it is used and kept in OCR_CACHE, across app versions.
  *
  * Messages from pages:
  *   {type: 'SKIP_WAITING'} -> activate this (waiting) worker now
@@ -33,6 +35,8 @@ const APP_CACHE = DEV ? 'pantry-dev' : `pantry-${VERSION}`;
 const IMAGE_CACHE = 'pantry-images';
 const IMAGE_HOSTS = new Set(['images.openfoodfacts.org']);
 const IMAGE_CACHE_MAX = 300;
+const OCR_CACHE = 'pantry-ocr-7.0.0'; // change when the files in vendor/ocr/ change (tools/vendor.mjs)
+const OCR_URL = new URL('./vendor/ocr/', self.location.href).href;
 const SCOPE = self.registration.scope;
 const INDEX_URL = new URL('./index.html', self.location.href).href;
 const ROOT_URL = new URL('./', self.location.href).href;
@@ -51,7 +55,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
-      const keep = new Set([APP_CACHE, IMAGE_CACHE]);
+      const keep = new Set([APP_CACHE, IMAGE_CACHE, OCR_CACHE]);
       const names = await caches.keys();
       await Promise.all(names.filter((n) => n.startsWith(CACHE_PREFIX) && !keep.has(n)).map((n) => caches.delete(n)));
       await self.clients.claim();
@@ -79,7 +83,8 @@ self.addEventListener('fetch', (event) => {
   if (url.origin === self.location.origin) {
     // The origin (e.g. <user>.github.io) may host other apps: only handle our own scope.
     if (!request.url.startsWith(SCOPE)) return;
-    event.respondWith(DEV ? networkFirst(event) : cacheFirst(request));
+    if (request.url.startsWith(OCR_URL)) event.respondWith(cachedOcr(event));
+    else event.respondWith(DEV ? networkFirst(event) : cacheFirst(request));
     return;
   }
   if (IMAGE_HOSTS.has(url.hostname)) {
@@ -123,6 +128,19 @@ async function networkFirst(event) {
     if (cached) return request.mode === 'navigate' ? withoutRedirect(cached) : cached;
     throw error;
   }
+}
+
+// ---- the OCR engine: cache-first in its own cache, filled on first use --------------------------
+async function cachedOcr(event) {
+  const { request } = event;
+  const cache = await caches.open(OCR_CACHE);
+  const cached = await cache.match(request, { ignoreSearch: true, ignoreVary: true });
+  if (cached) return cached;
+  const response = await fetch(request);
+  if (response.ok && response.type === 'basic') {
+    event.waitUntil(cache.put(request, response.clone()).catch(() => {}));
+  }
+  return response;
 }
 
 // ---- Open Food Facts images: cache-first, bounded -----------------------------------------------

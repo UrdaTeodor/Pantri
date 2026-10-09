@@ -61,7 +61,7 @@ try {
     await go('#/new');
     await page.locator('#pf-name').fill(p.name);
     if (p.code) {
-      await page.getByRole('button', { name: '+ Add a barcode' }).click();
+      await page.getByRole('button', { name: 'Type one in' }).click();
       await page.locator('input[aria-label="Barcode"]').fill(p.code);
     }
     if (p.rate) {
@@ -85,11 +85,14 @@ try {
   await page.locator('.site-bar button:text("Apartment")').click();
   await page.locator('button[aria-label="Scan a barcode"]').click();
   assert.match(await text(page.locator('.scan-title')), /Apartment/);
+  await page.locator('.scan-frame').waitFor(); // the (fake) camera is on
   await page.locator('.scan-top button[aria-label="Type a barcode"]').click();
   await page.locator('.sheet input[name=v]').fill(CODE);
   await page.locator('.sheet button:text("Continue")').click();
   await page.locator(".sheet h2:text(\"Still water 0.5 L isn't tracked at Apartment yet\")").waitFor();
   await page.locator('.sheet .menu-item:has-text("Track it at Apartment")').click();
+  await page.locator('.scan-title:has-text("Now the expiry date")').waitFor();
+  await page.locator('.date-controls button:text("Skip")').click(); // nothing printed on the fake camera
   await page.locator('.sheet h2:text("Still water 0.5 L")').waitFor();
   assert.match(await text(page.locator('.sheet .field:has-text("Where is it going?") select')), /^Apartment$/);
   await page.locator('.sheet .stepper input').first().fill('6');

@@ -54,7 +54,7 @@ export function AddStockForm({ p, units = 1, expiry = null, expiryNote = '', sub
       <${Stepper} value=${qty} onChange=${setQty} min=${1} step=${units} />
       ${units > 1 && html`<div class="hint">This barcode counts as ${qtyText(units, p.unit)}.</div>`}
     </div>
-    <${ExpiryPicker} value=${exp} onChange=${setExp} product=${p} now=${now} note=${expiryNote} />
+    <${ExpiryPicker} value=${exp} onChange=${setExp} product=${p} now=${now} note=${exp === expiry ? expiryNote : ''} />
     <div class="field">
       <label>Where is it going?</label>
       <${LocationSelect} value=${loc} onChange=${setLoc} locations=${state.locations} within=${within} />

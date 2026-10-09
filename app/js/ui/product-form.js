@@ -1,14 +1,33 @@
-// New / edit product form. With a scanned code it looks the product up online and fills in the blanks.
+// New / edit product form. With a scanned code it looks the product up online and fills in the blanks
+// (and keeps its nutrition facts, shown on the product page).
 
 import { html, useState, useEffect, useRef } from './lib.js';
 import { ask, goBack, navigate, promptSheet, showToast } from './nav.js';
 import { useApp, Header, Icon, Stepper, ExpiryPicker, LocationSelect, CategorySelect, Thumb, focusOnMount, siteContext } from './kit.js';
+import { BarcodeSheet } from './camera.js';
 import { createProduct, updateProduct, addBarcode, addCategory, requestPersistenceOnce } from '../store.js';
 import { lookupProduct, guessCategory } from '../lookup.js';
 import { findAllByCode, siteOf } from '../model.js';
 import { plural, PER_LABEL, parseNum } from '../format.js';
 
-const UNITS = ['pcs', 'bottle', 'can', 'bag', 'box', 'pack', 'carton', 'jar', 'roll', 'cup', 'pod', 'kg', 'L'];
+const UNITS = ['pcs', 'bottle', 'can', 'pack', 'box', 'bag', 'jar', 'roll', 'kg', 'L'];
+const unitsPerScan = b => Math.max(1, Math.round(parseNum(b.units)) || 1);
+
+/** "Counted in": the usual units as buttons, or anything else typed in. */
+function UnitPicker({ value, onChange }) {
+  const [other, setOther] = useState(UNITS.includes(value) ? '' : value);
+  return html`
+    <div class="field">
+      <label id="pf-unit-label">Counted in</label>
+      <div class="chips" role="group" aria-labelledby="pf-unit-label">
+        ${UNITS.map(u => html`
+          <button type="button" class=${`chip-btn${value === u ? ' on' : ''}`} aria-pressed=${value === u}
+            onClick=${() => { setOther(''); onChange(u); }}>${plural(u, 2)}</button>`)}
+      </div>
+      <input id="pf-unit" class="input" value=${other} placeholder="Something else, e.g. tray" aria-label="Counted in: something else"
+        onInput=${e => { setOther(e.target.value); onChange(e.target.value.trim() || 'pcs'); }} />
+    </div>`;
+}
 
 function fromProduct(p) {
   return {
@@ -21,11 +40,11 @@ function fromProduct(p) {
   };
 }
 
-function blank(code, locationId) {
+function blank(code, locationId, noExpiry) {
   return {
     name: '', brand: '', size: '', imageUrl: '', categoryId: null, unit: 'pcs',
     barcodes: code ? [{ code, units: 1 }] : [], rateOn: false, rateQty: 1, ratePer: 'day',
-    minStock: 0, orderQty: '', reorder: true, locationId, notes: '',
+    minStock: 0, orderQty: '', reorder: true, locationId, notes: '', noExpiry: !!noExpiry,
   };
 }
 
@@ -55,16 +74,19 @@ function ProductPicker({ close }) {
 }
 
 /**
- * Props: product (edit) | code + scanExpiry (new from scan) | nothing (new by hand);
- * onSaved(id, addedQty), onLinked(id, units), onCancel(), submitLabel.
+ * Props: product (edit) | code + scanExpiry, scanExpiryNote, noExpiry (new from scan) | nothing (new by
+ * hand); onSaved(id, addedQty), onLinked(id, units), onCancel(), submitLabel.
  */
-export function ProductForm({ product = null, code = null, scanExpiry = null, onSaved, onLinked, onCancel, submitLabel = '' }) {
+export function ProductForm({
+  product = null, code = null, scanExpiry = null, scanExpiryNote = '', noExpiry = false, onSaved, onLinked, onCancel, submitLabel = '',
+}) {
   const { state, now } = useApp();
   const editing = !!product;
-  const [f, setF] = useState(() => (editing ? fromProduct(product) : blank(code, lastLocation(state))));
+  const [f, setF] = useState(() => (editing ? fromProduct(product) : blank(code, lastLocation(state), noExpiry)));
   const [initial, setInitial] = useState({ qty: 1, expiry: scanExpiry, touched: false });
   const [lookup, setLookup] = useState(code && !editing && state.settings.lookup ? { status: 'loading' } : null);
   const [error, setError] = useState('');
+  const [focusRow, setFocusRow] = useState(-1); // a barcode row just added by "Type one in"
   const touched = useRef(new Set());
 
   const upd = (k, v) => {
@@ -78,9 +100,12 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
     lookupProduct(code)
       .then(r => {
         if (!alive) return;
-        if (!r) return setLookup({ status: 'none' });
+        if (!r) {
+          setF(x => ({ ...x, nutrition: null })); // looked up: none to show
+          return setLookup({ status: 'none' });
+        }
         setF(x => {
-          const y = { ...x };
+          const y = { ...x, nutrition: r.nutrition || null };
           for (const k of ['name', 'brand', 'size', 'imageUrl']) if (!touched.current.has(k) && r[k]) y[k] = r[k];
           if (!touched.current.has('categoryId') && !x.categoryId) y.categoryId = guessCategory(r.categories, state.categories);
           return y;
@@ -92,10 +117,22 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
   }, [code]);
 
   // The first barcode's pack size is the natural first-stock amount until the user picks one.
-  const firstUnits = (f.barcodes[0] && Math.round(parseNum(f.barcodes[0].units))) || 1;
+  const firstUnits = f.barcodes[0] ? unitsPerScan(f.barcodes[0]) : 1;
   const initialQty = initial.touched ? initial.qty : firstUnits;
 
   const setBarcode = (k, patch) => upd('barcodes', f.barcodes.map((b, j) => (j === k ? { ...b, ...patch } : b)));
+  const scanBarcode = async () => {
+    const scanned = await ask(close => html`<${BarcodeSheet} close=${close} />`, { full: true });
+    if (!scanned) return;
+    if (f.barcodes.some(b => String(b.code).trim() === scanned)) return showToast('That barcode is already on this product');
+    const empty = f.barcodes.findIndex(b => !String(b.code).trim());
+    if (empty >= 0) setBarcode(empty, { code: scanned });
+    else upd('barcodes', [...f.barcodes, { code: scanned, units: 1 }]);
+  };
+  const typeBarcode = () => {
+    setFocusRow(f.barcodes.length);
+    upd('barcodes', [...f.barcodes, { code: '', units: 1 }]);
+  };
 
   const newCategory = async () => {
     const name = await promptSheet({ title: 'New category', placeholder: 'e.g. Breakfast' });
@@ -132,7 +169,7 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
       return;
     }
     const barcodes = f.barcodes
-      .map(b => ({ code: String(b.code).trim(), units: Math.max(1, Math.round(parseNum(b.units)) || 1) }))
+      .map(b => ({ code: String(b.code).trim(), units: unitsPerScan(b) }))
       .filter(b => b.code);
     // A barcode belongs to one product per site (several sites can each track the same item).
     const site = siteOf(state.locations, f.locationId);
@@ -158,6 +195,8 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
       reorder: f.reorder,
       locationId: f.locationId,
       notes: f.notes.trim(),
+      noExpiry: !!f.noExpiry,
+      ...(!editing && f.nutrition !== undefined ? { nutrition: f.nutrition } : {}),
     };
     if (editing) {
       updateProduct(product.id, data);
@@ -193,18 +232,12 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
         <div class="field"><label for="pf-brand">Brand</label><input id="pf-brand" class="input" value=${f.brand} onInput=${e => upd('brand', e.target.value)} /></div>
         <div class="field"><label for="pf-size">Size</label><input id="pf-size" class="input" value=${f.size} onInput=${e => upd('size', e.target.value)} placeholder="500 ml" /></div>
       </div>
-      <div class="two">
-        <div class="field">
-          <label for="pf-category">Category</label>
-          <${CategorySelect} id="pf-category" value=${f.categoryId} onChange=${v => upd('categoryId', v)} categories=${state.categories} />
-          <button type="button" class="link-btn" onClick=${newCategory}>+ New category</button>
-        </div>
-        <div class="field">
-          <label for="pf-unit">Counted in</label>
-          <input id="pf-unit" class="input" list="units" value=${f.unit} onInput=${e => upd('unit', e.target.value)} />
-          <datalist id="units">${UNITS.map(u => html`<option value=${u} />`)}</datalist>
-        </div>
+      <div class="field">
+        <label for="pf-category">Category</label>
+        <${CategorySelect} id="pf-category" value=${f.categoryId} onChange=${v => upd('categoryId', v)} categories=${state.categories} />
+        <button type="button" class="link-btn" onClick=${newCategory}>+ New category</button>
       </div>
+      <${UnitPicker} value=${f.unit} onChange=${v => upd('unit', v)} />
 
       <fieldset class="group">
         <legend>Usage</legend>
@@ -243,19 +276,33 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
       </fieldset>
 
       <fieldset class="group">
-        <legend>Barcodes</legend>
+        <legend>${f.barcodes.length > 1 ? 'Barcodes' : 'Barcode'}</legend>
         ${f.barcodes.map((b, k) => html`
-          <div class="barcode-row" key=${k}>
-            <input class="input mono" value=${b.code} inputmode="numeric" placeholder="Barcode" aria-label="Barcode"
-              onInput=${e => setBarcode(k, { code: e.target.value })} />
-            <input class="input num" type="text" inputmode="numeric" value=${b.units} aria-label="Units per scan"
-              onInput=${e => setBarcode(k, { units: e.target.value })} />
-            <button type="button" class="icon-btn" aria-label="Remove barcode" onClick=${() => upd('barcodes', f.barcodes.filter((_, j) => j !== k))}>
-              <${Icon} name="x" size=${18} />
-            </button>
+          <div class="barcode-item" key=${k}>
+            <div class="barcode-row">
+              <input class="input mono" value=${b.code} inputmode="numeric" placeholder="Type the barcode" aria-label="Barcode"
+                ref=${k === focusRow ? focusOnMount : null} onInput=${e => setBarcode(k, { code: e.target.value })} />
+              <button type="button" class="icon-btn" aria-label="Remove barcode" onClick=${() => upd('barcodes', f.barcodes.filter((_, j) => j !== k))}>
+                <${Icon} name="x" size=${18} />
+              </button>
+            </div>
+            <div class="barcode-units">
+              <span>Each scan adds</span>
+              <${Stepper} value=${unitsPerScan(b)} min=${1} label="Units per scan" onChange=${v => setBarcode(k, { units: v })} />
+              <span>${plural(f.unit, unitsPerScan(b))}</span>
+            </div>
           </div>`)}
-        ${f.barcodes.length > 0 && html`<p class="hint">The number is how many ${plural(f.unit, 2)} one scan adds (e.g. 6 for a six-pack).</p>`}
-        <button type="button" class="link-btn" onClick=${() => upd('barcodes', [...f.barcodes, { code: '', units: 1 }])}>+ Add a barcode</button>
+        ${!f.barcodes.length && html`<p class="hint">No barcode yet. With one, scanning finds this product straight away.</p>`}
+        <div class="barcode-actions">
+          <button type="button" class="btn small" onClick=${scanBarcode}><${Icon} name="scan" size=${18} /> Scan a barcode</button>
+          <button type="button" class="btn small" onClick=${typeBarcode}><${Icon} name="keyboard" size=${18} /> Type one in</button>
+        </div>
+        ${f.barcodes.length > 0 && html`<p class="hint">For a multipack, set how many one scan adds: a six-pack adds 6.</p>`}
+        ${state.settings.scanExpiry !== false && html`
+          <label class="switch barcode-expiry">
+            <input type="checkbox" checked=${!f.noExpiry} onChange=${e => upd('noExpiry', !e.target.checked)} />
+            <span>After scanning it, read the expiry date</span>
+          </label>`}
       </fieldset>
 
       <div class="field">
@@ -272,7 +319,7 @@ export function ProductForm({ product = null, code = null, scanExpiry = null, on
           </div>
           ${initialQty > 0 && html`
             <${ExpiryPicker} value=${initial.expiry} onChange=${v => setInitial(x => ({ ...x, expiry: v }))} now=${now}
-              note=${scanExpiry && initial.expiry === scanExpiry ? 'read from barcode' : ''} />`}
+              note=${scanExpiry && initial.expiry === scanExpiry ? scanExpiryNote || 'read from barcode' : ''} />`}
         </fieldset>`}
 
       <div class="field">

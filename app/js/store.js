@@ -49,6 +49,7 @@ export function newProduct(now) {
   return {
     id: '', name: '', brand: '', size: '', imageUrl: '', categoryId: null, unit: 'pcs', barcodes: [],
     rate: null, minStock: 0, orderQty: null, reorder: true, locationId: null, shelfLifeDays: null, notes: '',
+    noExpiry: false, // has no expiry date: the scanner doesn't ask for one
     createdAt: now, anchorAt: now, countedAt: now, countedQty: 0, addedAt: null, touchedAt: now,
     snoozeUntil: null, orderedAt: null, rateHintAt: null,
   };
@@ -512,8 +513,8 @@ export function setCurrentSite(siteId) {
 export function copyProductToSite(id, locationId) {
   const src = getState().products.find(p => p.id === id);
   if (!src) return null;
-  const keep = ['name', 'brand', 'size', 'imageUrl', 'categoryId', 'unit', 'rate', 'minStock', 'orderQty', 'reorder', 'notes'];
-  const data = Object.fromEntries(keep.map(k => [k, structuredClone(src[k])]));
+  const keep = ['name', 'brand', 'size', 'imageUrl', 'categoryId', 'unit', 'rate', 'minStock', 'orderQty', 'reorder', 'notes', 'noExpiry', 'nutrition'];
+  const data = Object.fromEntries(keep.filter(k => src[k] !== undefined).map(k => [k, structuredClone(src[k])]));
   return createProduct({ ...data, barcodes: src.barcodes.map(b => ({ ...b })), locationId }, { qty: 0 });
 }
 

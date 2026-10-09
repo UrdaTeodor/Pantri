@@ -2,7 +2,8 @@
 // Stamps the service worker for a deploy: rewrites the `// <stamp>` ... `// </stamp>` block in
 // app/sw.js with
 //   VERSION = first 10 hex chars of sha256(paths + contents of every deployed file), and
-//   FILES   = sorted relative URLs of every file under app/ (except sw.js and dotfiles), plus './'.
+//   FILES   = sorted relative URLs of every file under app/ (except sw.js, dotfiles and the files
+//             the service worker caches on first use instead: LAZY), plus './'.
 // The repo keeps sw.js in dev mode (VERSION '__BUILD__', FILES []); CI stamps before uploading.
 //
 //   node tools/stamp.mjs              stamp app/sw.js in place (idempotent)
@@ -21,6 +22,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SW_FILE = 'sw.js';
 const DEV_VERSION = '__BUILD__';
+// Deployed but not precached: the service worker fetches them when first used (see OCR_CACHE in sw.js).
+const LAZY = ['vendor/ocr/'];
 const TEXT_EXTENSIONS = new Set(['.html', '.htm', '.js', '.mjs', '.css', '.json', '.webmanifest', '.svg', '.txt', '.md', '.xml']);
 const IGNORED_NAMES = new Set(['Thumbs.db', 'desktop.ini']);
 // opening line (kept verbatim) / generated body / closing line
@@ -94,7 +97,7 @@ export async function computeStamp(rootDir = path.join(ROOT, 'app')) {
   hash.update(applyStamp(sw, null).replace(/\r\n/g, '\n'));
   return {
     version: hash.digest('hex').slice(0, 10),
-    files: ['./', ...rels.map(toUrl)].sort(byCodeUnit),
+    files: ['./', ...rels.filter((rel) => !LAZY.some((dir) => rel.startsWith(dir))).map(toUrl)].sort(byCodeUnit),
   };
 }
 

@@ -1,6 +1,6 @@
-// Product detail: stock & estimate, batches, rate suggestion, settings summary, history.
+// Product detail: stock & estimate, batches, rate suggestion, settings summary, nutrition, history.
 
-import { html } from './lib.js';
+import { html, useState, useEffect, useRef } from './lib.js';
 import { navigate, goBack, pickSheet, confirmSheet, showToast } from './nav.js';
 import { useApp, Header, Icon, Thumb, Empty, placeText, siteContext } from './kit.js';
 import { openAddStock, openCount, openUse, chooseAndWaste, openBatch, undoToast } from './sheets.js';
@@ -9,8 +9,9 @@ import {
 } from '../model.js';
 import { qtyText, rateText, dayText, ago, expiryText, fmtNum, PER_LABEL, plural } from '../format.js';
 import {
-  applyRate, dismissRateHint, deleteProduct, setReorder, setOrdered, copyProductToSite,
+  applyRate, dismissRateHint, deleteProduct, setReorder, setOrdered, copyProductToSite, updateProduct,
 } from '../store.js';
+import { lookupNutrition } from '../lookup.js';
 
 const EVENT_TEXT = {
   add: (e, u) => `Added ${qtyText(e.qty, u)}${e.initial ? ' (first stock)' : ''}`,
@@ -37,6 +38,78 @@ function Suggestion({ p, sug }) {
         </div>
       </div>
     </div>`;
+}
+
+const NUTRIENT_ROWS = [
+  ['kcal', 'Energy'], ['fat', 'Fat'], ['saturated', 'of which saturates', true], ['carbs', 'Carbohydrate'],
+  ['sugars', 'of which sugars', true], ['fiber', 'Fibre'], ['protein', 'Protein'], ['salt', 'Salt'],
+];
+const NOVA = { 1: 'unprocessed', 2: 'culinary ingredient', 3: 'processed', 4: 'ultra-processed' };
+const lookedUp = new Set(); // products whose nutrition facts were fetched by themselves this app run
+
+/**
+ * Nutrition facts from Open Food Facts. Products scanned before they were kept get them looked up once,
+ * by themselves (when online lookups are on); otherwise a button does it.
+ */
+function Nutrition({ p, now }) {
+  const { state } = useApp();
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+  const codes = p.barcodes.map(b => b.code);
+  const fetchNow = () => {
+    setBusy(true);
+    setFailed(false);
+    lookupNutrition(codes)
+      .then(found => updateProduct(p.id, { nutrition: found }))
+      .catch(() => alive.current && setFailed(true))
+      .finally(() => alive.current && setBusy(false));
+  };
+  useEffect(() => {
+    if (p.nutrition !== undefined || !codes.length || !state.settings.lookup || lookedUp.has(p.id)) return;
+    lookedUp.add(p.id);
+    fetchNow();
+  }, [p.id]);
+
+  const n = p.nutrition;
+  if (!n) {
+    if (!codes.length || n === null) return null; // nothing to look up, or nothing found
+    return html`
+      <section class="section">
+        <h2 class="section-title">Nutrition</h2>
+        ${busy ? html`<p class="muted pad">Looking up the nutrition facts…</p>` : html`
+          <div class="card pad">
+            <p class="muted">${failed ? "Couldn't look up the nutrition facts (offline?)." : 'The nutrition facts can be looked up on Open Food Facts.'}</p>
+            <button class="btn block" onClick=${fetchNow}>Look up nutrition facts</button>
+          </div>`}
+      </section>`;
+  }
+  const v = n.per100 || {};
+  const amount = k => (k === 'kcal' ? `${fmtNum(Math.round(v.kcal))} kcal${v.kj != null ? ` · ${fmtNum(Math.round(v.kj))} kJ` : ''}` : `${fmtNum(v[k])} g`);
+  const rows = NUTRIENT_ROWS.filter(([k]) => v[k] != null);
+  return html`
+    <section class="section">
+      <h2 class="section-title">Nutrition ${rows.length > 0 && html`<span class="muted small">per 100 ${n.per === 'ml' ? 'ml' : 'g'}</span>`}</h2>
+      <div class="card pad nutrition">
+        ${(n.nutriScore || n.nova) && html`
+          <div class="nutri-badges">
+            ${n.nutriScore && html`<span class=${`nutri-score nutri-${n.nutriScore}`}>Nutri-Score ${n.nutriScore.toUpperCase()}</span>`}
+            ${n.nova && html`<span class="chip">NOVA ${n.nova} · ${NOVA[n.nova]}</span>`}
+          </div>`}
+        ${rows.length > 0 && html`
+          <table class="nutri-table">
+            <tbody>
+              ${rows.map(([k, label, sub]) => html`<tr class=${sub ? 'sub' : ''} key=${k}><th scope="row">${label}</th><td>${amount(k)}</td></tr>`)}
+            </tbody>
+          </table>`}
+        ${n.serving && html`<p class="hint">Serving: ${n.serving}</p>`}
+        ${n.allergens && n.allergens.length > 0 && html`<p class="nutri-allergens"><b>Allergens:</b> ${n.allergens.join(', ')}</p>`}
+        ${n.ingredients && html`<details class="ingredients"><summary>Ingredients</summary><p>${n.ingredients}</p></details>`}
+        <p class="hint">From ${n.source || 'Open Food Facts'} · ${ago(n.fetchedAt, now)}
+          <button class="link-btn inline" disabled=${busy} onClick=${fetchNow}>${busy ? 'Updating…' : failed ? 'Offline? Try again' : 'Update'}</button></p>
+      </div>
+    </section>`;
 }
 
 export function ProductPage({ route }) {
@@ -176,6 +249,8 @@ export function ProductPage({ route }) {
           </dl>
         </div>
       </section>
+
+      <${Nutrition} p=${p} now=${now} />
 
       <section class="section">
         <h2 class="section-title">History</h2>

@@ -20,8 +20,12 @@ const COLA = {
   product: {
     product_name: 'Coca-Cola Original', brands: 'Coca-Cola', quantity: '330 ml',
     image_front_small_url: '', categories_tags: ['en:beverages', 'en:sodas'],
+    nutriments: { 'energy-kcal_100g': 42, 'energy-kj_100g': 180, fat_100g: 0, carbohydrates_100g: 10.6, sugars_100g: 10.6, proteins_100g: 0, salt_100g: 0 },
+    nutriscore_grade: 'e', nova_group: 4, ingredients_text: 'Water, sugar, carbon dioxide, colour (caramel E150d), acid (phosphoric acid), natural flavourings, caffeine flavouring.',
   },
 };
+
+
 
 async function newPage(browser, opts = {}) {
   const context = await browser.newContext({
@@ -55,7 +59,10 @@ const text = async loc => (await loc.textContent()).replace(/\s+/g, ' ').trim();
 async function addProduct(page, p) {
   await page.goto(`${server.url}#/new`);
   await page.locator('#pf-name').fill(p.name);
-  await page.locator('input[list="units"]').fill(p.unit);
+  const chip = page.locator(`.chip-btn:text-is("${p.unit}s")`); // the usual units are buttons (plural)…
+  if (await chip.count()) await chip.click();
+  else await page.locator('#pf-unit').fill(p.unit); // …anything else is typed in
+  assert.equal(await page.evaluate(() => document.querySelector('#pf-unit').value), (await chip.count()) ? '' : p.unit);
   if (p.rate) {
     await page.getByLabel('Track how fast it gets used').check();
     await page.getByLabel('Amount').fill(String(p.rate[0]));
@@ -202,32 +209,63 @@ try {
   assert.equal(await page.locator('.list .row').count(), 4);
   log('backup saved, data erased, and restored from the file');
 
-  // ---- manual barcode entry → online lookup → new product, then known product ----
+  // ---- manual barcode entry → expiry-date step → online lookup → new product, then known product ----
+  // (With this page's fixed clock, headless Edge's fake camera starts only once: later scans are typed
+  // with the camera off, which the app handles like a phone without a camera.)
   await page.goto(`${server.url}#/`);
   await page.locator('button[aria-label="Scan a barcode"]').click();
+  await page.locator('.scan-frame').waitFor(); // the (fake) camera is on
   await page.locator('.scan-top button[aria-label="Type a barcode"]').click();
   await page.locator('.sheet input[name=v]').fill(COLA.code);
   await page.locator('.sheet button:text("Continue")').click();
+  await page.locator('.scan-frame.date').waitFor();
+  assert.match(await text(page.locator('.scan-title')), /^Now the expiry date$/);
+  assert.match(await text(page.locator('.date-controls')), /(Getting the date reader ready|Hold the printed date inside the frame|Reading)/);
+  await shot(page, 'date-step');
+  await page.locator('.date-controls button:text("This product has no date")').click();
   await page.locator('.lookup:has-text("Found on Open Food Facts")').waitFor();
+  assert.equal(await page.getByLabel('After scanning it, read the expiry date').isChecked(), false);
   assert.equal(await page.locator('#pf-name').inputValue(), 'Coca-Cola Original');
   assert.equal(await page.locator('.field:has(> label:text-is("Category")) select option:checked').textContent(), 'Drinks');
+  await page.locator('.chip-btn:text-is("bottles")').click();
   await page.locator('input[aria-label="Units per scan"]').fill('6');
   assert.equal(await page.locator('fieldset:has(legend:text("In stock right now")) .stepper input').inputValue(), '6');
+  assert.match(await text(page.locator('.barcode-units')), /^Each scan adds\s*bottles$/); // around the stepper (6)
+  await page.locator('fieldset:has(legend:text("Barcode"))').scrollIntoViewIfNeeded();
   await shot(page, 'new-from-scan');
   await page.getByRole('button', { name: 'Save product' }).click();
   await page.waitForFunction(() => !location.hash.startsWith('#/scan'));
-  log('typed barcode → found online → saved with 6 per scan; scanner closed');
+  const cola = () => page.evaluate(async () => (await import('./js/store.js')).getState().products.find(p => p.name === 'Coca-Cola Original'));
+  assert.equal((await cola()).noExpiry, true);
+  log('typed barcode → date step: "This product has no date" → found online → saved as bottles, 6 per scan, no date step for it');
   await page.locator('button[aria-label="Scan a barcode"]').click();
   await page.locator('.scan-top button[aria-label="Type a barcode"]').click();
   await page.locator('.sheet input[name=v]').fill(COLA.code);
   await page.locator('.sheet button:text("Continue")').click();
-  await page.locator('.sheet h2:text("Coca-Cola Original")').waitFor();
+  await page.locator('.sheet h2:text("Coca-Cola Original")').waitFor(); // no date step for it
   await shot(page, 'known-scan');
-  await page.locator('.sheet button:text("Add 6 pcs")').click();
+  await page.locator('.sheet button:text("Add 6 bottles")').click();
   await page.waitForFunction(() => !location.hash.startsWith('#/scan'));
   await page.goto(`${server.url}#/pantry`);
-  assert.match(await text(page.locator('.row:has-text("Coca-Cola")')), /12 pcs/);
-  log('scanning the known barcode adds 6 more (12 in stock)');
+  assert.match(await text(page.locator('.row:has-text("Coca-Cola")')), /12 bottles/);
+  log('scanning the known barcode goes straight to it and adds 6 more (12 bottles)');
+
+  await page.goto(`${server.url}#/product/${(await cola()).id}`);
+  const nutrition = page.locator('.section:has(> .section-title:has-text("Nutrition"))');
+  await nutrition.locator('.nutri-score').waitFor();
+  assert.match(await text(nutrition.locator('.section-title')), /Nutrition per 100 ml/);
+  assert.equal(await text(nutrition.locator('.nutri-score')), 'Nutri-Score E');
+  assert.match(await text(nutrition.locator('.nutri-table')), /Energy\s*42 kcal · 180 kJ.*of which sugars\s*10\.6 g/);
+  assert.match(await text(nutrition), /From Open Food Facts/);
+  await nutrition.scrollIntoViewIfNeeded();
+  await shot(page, 'nutrition');
+  await page.goto(`${server.url}#/edit/${(await cola()).id}`);
+  assert.equal(await page.getByLabel('After scanning it, read the expiry date').isChecked(), false);
+  await page.getByLabel('After scanning it, read the expiry date').check();
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await page.waitForURL(/#\/product\//);
+  assert.equal((await cola()).noExpiry, false);
+  log('no date step for it any more; its product page shows the nutrition facts from the scan; the form switches the date step back on');
   await page.close();
 
   // ---- dark mode look ----
@@ -249,7 +287,9 @@ try {
   await browser.close();
 }
 
-// ---- live camera: a JPEG of the EAN-13 fed to Edge's fake camera, restock mode ----
+// ---- live camera: a package with an EAN-13 and a printed expiry date, fed to Edge's fake camera ----
+// The barcode is read from the whole picture; the date from what is inside the wide on-screen frame
+// (on this 390×844 phone screen, that is about x 500–780, y 290–370 of the 1280×720 picture).
 const mjpeg = path.join(outDir, 'barcode.mjpeg');
 {
   const b = await chromium.launch({ channel: 'msedge', headless: true });
@@ -261,8 +301,12 @@ const mjpeg = path.join(outDir, 'barcode.mjpeg');
     g.fillStyle = '#fff';
     g.fillRect(0, 0, c.width, c.height);
     g.fillStyle = '#000';
-    const w = 6, x0 = (c.width - mods.length * w) / 2;
-    for (let i = 0; i < mods.length; i++) if (mods[i] === '1') g.fillRect(x0 + i * w, 200, w, 320);
+    const w = 5, x0 = (c.width - mods.length * w) / 2;
+    for (let i = 0; i < mods.length; i++) if (mods[i] === '1') g.fillRect(x0 + i * w, 30, w, 210);
+    g.font = 'bold 30px Arial';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('EXP 12.05.2027', 640, 331);
     return c.toDataURL('image/jpeg', 0.92);
   }, modules);
   fs.writeFileSync(mjpeg, Buffer.from(dataUrl.split(',')[1], 'base64'));
@@ -275,13 +319,18 @@ const cam = await chromium.launch({
 try {
   const page = await newPage(cam);
   await page.goto(`${server.url}#/scan?mode=restock`);
-  await page.locator('.lookup .mono').waitFor({ timeout: 20000 });
+  await page.locator('.lookup .mono').waitFor({ timeout: 30000 });
   assert.equal(await text(page.locator('.lookup .mono')), COLA.code);
   await page.locator('.lookup:has-text("Found on Open Food Facts")').waitFor();
+  const stock = page.locator('fieldset:has(legend:text("In stock right now"))');
+  assert.equal(await stock.locator('input[type=date]').inputValue(), '2027-05-12');
+  assert.match(await text(stock.locator('.hint')), /read from the package — check it/);
+  await shot(page, 'date-read');
   await page.getByRole('button', { name: 'Save & scan next' }).click();
   await page.locator('.tally').waitFor();
-  log('camera read the barcode live; new product saved in restock mode, scanner still open');
-  await page.locator('.sheet h2:text("Coca-Cola Original")').waitFor({ timeout: 20000 });
+  log('camera read the barcode, then the printed date "EXP 12.05.2027" (2027-05-12, "check it"); saved in restock mode');
+  await page.locator('.sheet h2:text("Coca-Cola Original")').waitFor({ timeout: 30000 });
+  assert.equal(await page.locator('.sheet input[type=date]').inputValue(), '2027-05-12');
   await page.getByRole('button', { name: 'Add & scan next' }).click();
   await page.locator('.tally b:text("2 scanned")').waitFor();
   await shot(page, 'restock-tally');

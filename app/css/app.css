@@ -265,9 +265,14 @@ textarea.input { resize: vertical; }
 .switch input { width: 22px; height: 22px; accent-color: var(--primary); flex: none; }
 .rate-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .rate-row select { flex: 1; min-width: 120px; }
+.barcode-item { padding: 4px 0 12px; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
 .barcode-row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
 .barcode-row .input.mono { flex: 1; min-width: 0; }
-.barcode-row .input.num { width: 72px; }
+.barcode-units { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; color: var(--muted); }
+.barcode-units .stepper { min-width: 0; width: 132px; height: 40px; }
+.barcode-units .stepper .step { width: 40px; }
+.barcode-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 10px; }
+.barcode-expiry { margin-top: 4px; }
 .lookup { display: grid; gap: 4px; padding: 12px 14px; margin-bottom: 10px; border-radius: var(--radius); background: var(--surface-2); }
 .lookup .link-btn { margin: 0; justify-content: flex-start; text-align: left; }
 .form-actions {
@@ -326,6 +331,23 @@ textarea.input { resize: vertical; }
 .reminder-privacy { margin-top: 14px; }
 
 /* ---------- product ---------- */
+
+.nutri-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.nutri-score { display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; border-radius: 999px; font-size: 13px; font-weight: 700; color: #fff; }
+.nutri-a { background: #038141; }
+.nutri-b { background: #5e9c22; }
+.nutri-c { background: #f2c200; color: #1e1e1e; }
+.nutri-d { background: #e07400; }
+.nutri-e { background: #d6380f; }
+.nutri-table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.nutri-table th { padding: 7px 0; text-align: left; font-weight: 500; }
+.nutri-table td { padding: 7px 0; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.nutri-table tr + tr { border-top: 1px solid var(--border); }
+.nutri-table tr.sub th { padding-left: 14px; font-size: 14px; color: var(--muted); }
+.nutrition .hint, .nutri-allergens { margin-top: 10px; }
+.ingredients { margin-top: 10px; }
+.ingredients summary { cursor: pointer; font-weight: 600; }
+.ingredients p { margin: 6px 0 0; font-size: 14px; color: var(--muted); }
 
 .product-hero { display: flex; gap: 14px; align-items: center; margin: 2px 0 12px; }
 .product-hero .chip { margin: 6px 6px 0 0; }
@@ -470,6 +492,12 @@ textarea.input { resize: vertical; }
   background: linear-gradient(rgb(0 0 0 / 55%), transparent);
 }
 .scan-title { flex: 1; font-weight: 700; text-align: center; text-shadow: 0 1px 3px rgb(0 0 0 / 60%); }
+.scan-title small { display: block; font-size: 13px; font-weight: 500; opacity: .85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scan-frame.date { top: 46%; width: min(88vw, 440px); height: min(26vw, 130px); }
+.scan-bottom.date { flex-direction: column; }
+.date-controls { display: grid; gap: 10px; justify-items: center; width: 100%; max-width: 420px; }
+.date-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }
+.date-actions .btn { min-width: 120px; }
 .scan-msg { position: absolute; top: 42%; left: 0; right: 0; text-align: center; color: #ddd; }
 .scan-error {
   position: absolute; left: 16px; right: 16px; top: 50%; transform: translateY(-50%);
