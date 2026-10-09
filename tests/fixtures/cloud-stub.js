@@ -3,15 +3,19 @@
 // The reminder tests load it in place of the real module: the Node test through a resolve hook, the
 // browser test by serving a copy of app/ with js/cloud.js replaced. Instead of a server it records what
 // the app sends in globalThis.__cloudStub, and takes its state from globalThis.__PANTRI_STUB__ =
-// { configured, signedIn, fail } (set before the app loads; `fail` makes every call reject like a network
+// { configured, signedIn, anonymous, fail } (set before the app loads; `anonymous`: the phone has the
+// anonymous session of a phone without an account; `fail` makes every call reject like a network
 // error). Tests can sign in or out later with __cloudStub.setSignedIn(true | false).
 
 const opts = () => globalThis.__PANTRI_STUB__ || {};
 const config = globalThis.__PANTRI_CONFIG__ || {};
 const listeners = new Set();
 const statusListeners = new Set();
-/** What the app sent: subscriptions [{ sub, device }], deleted endpoints, the last reminder upload. */
-const sent = (globalThis.__cloudStub ||= { subscriptions: [], deleted: [], reminders: [], uploads: 0 });
+/**
+ * What the app sent: subscriptions [{ sub, device, user }], deleted endpoints, the last reminder upload,
+ * and how often it signed in anonymously and asked to forget this phone.
+ */
+const sent = (globalThis.__cloudStub ||= { subscriptions: [], deleted: [], reminders: [], uploads: 0, anonymousSignIns: 0, forgotten: 0 });
 
 export const cloudConfigured = opts().configured ?? Boolean(config.SUPABASE_URL && config.SUPABASE_ANON_KEY);
 
@@ -19,7 +23,12 @@ export function isSignedIn() {
   return cloudConfigured && Boolean(opts().signedIn);
 }
 
-const session = () => (isSignedIn() ? { user: { id: 'stub-user', email: 'someone@example.com' } } : null);
+export function hasSession() {
+  return isSignedIn() || (cloudConfigured && Boolean(opts().anonymous));
+}
+
+const session = () => (isSignedIn() ? { user: { id: 'stub-user', email: 'someone@example.com' } }
+  : hasSession() ? { user: { id: 'stub-anonymous', is_anonymous: true } } : null);
 
 /** fn(session | null) now and on every sign-in / sign-out. Returns an unsubscribe function. */
 export function onAuth(fn) {
@@ -28,21 +37,44 @@ export function onAuth(fn) {
   return () => listeners.delete(fn);
 }
 
-sent.setSignedIn = signedIn => {
-  globalThis.__PANTRI_STUB__ = { ...opts(), signedIn };
+function changed(patch) {
+  globalThis.__PANTRI_STUB__ = { ...opts(), ...patch };
   for (const fn of listeners) fn(session());
   for (const fn of statusListeners) fn();
-};
+}
+sent.setSignedIn = signedIn => changed({ signedIn });
 
 function reachable() {
-  if (!isSignedIn()) throw new Error('Not signed in');
+  if (!hasSession()) throw new Error('Not signed in');
   if (opts().fail) throw new Error('Could not reach the server');
 }
 
-/** Remember this device's push subscription (PushSubscription.toJSON()) for the signed-in account. */
+/** A session for reminders: the account, or an anonymous one made now. */
+export async function ensureSession() {
+  if (!cloudConfigured) throw new Error('Online features are not set up in this version of the app.');
+  if (hasSession()) return;
+  if (opts().fail) throw new Error('Could not reach the server');
+  sent.anonymousSignIns++;
+  changed({ anonymous: true });
+}
+
+/** Remember this device's push subscription (PushSubscription.toJSON()) for this phone's user. */
 export async function savePushSubscription(sub, { device } = {}) {
+  await ensureSession();
   reachable();
-  sent.subscriptions = [...sent.subscriptions.filter(x => x.sub.endpoint !== sub.endpoint), { sub, device }];
+  const user = session().user.id;
+  sent.subscriptions = [...sent.subscriptions.filter(x => x.sub.endpoint !== sub.endpoint), { sub, device, user }];
+  return user;
+}
+
+/** Notifications off on a phone without an account: the server forgets it, the anonymous session ends. */
+export async function forgetThisDevice() {
+  if (!hasSession() || isSignedIn()) return;
+  if (opts().fail) return;
+  sent.forgotten++;
+  sent.subscriptions = sent.subscriptions.filter(x => x.user !== 'stub-anonymous');
+  sent.reminders = [];
+  changed({ anonymous: false });
 }
 
 export async function deletePushSubscription(endpoint) {

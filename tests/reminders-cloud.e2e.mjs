@@ -1,6 +1,7 @@
 // Reminders end to end with the REAL cloud module against the LOCAL Supabase stack (Edge headless):
-// the Settings switch registers this device and uploads the daily digests the phone computed, the server
-// stores them at the right local times, a new reminder time replaces them, and switching off clears them.
+// the switch in More → Notifications registers this device without an account (anonymously) and uploads
+// the daily digests the phone computed, the server stores them at the right local times, creating an
+// account moves them to it, a new reminder time replaces them, and switching off clears them.
 // The push service itself is faked in the page (headless Edge can't create real subscriptions).
 // Needs what tests/cloud.e2e.mjs needs; skips with a message (exit 0) when the stack isn't running.
 // Usage: node tests/reminders-cloud.e2e.mjs [outputDir]
@@ -39,6 +40,13 @@ const env = Object.fromEntries(fs.readFileSync(envFile, 'utf8').split('\n').filt
 async function admin(query) {
   const res = await fetch(`${API}/rest/v1/${query}`, { headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` } });
   if (!res.ok) throw new Error(`GET ${query}: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+/** An auth user as the admin API sees it, or null once deleted. */
+async function authUser(id) {
+  const res = await fetch(`${API}/auth/v1/admin/users/${id}`, { headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`admin user ${id}: ${res.status} ${await res.text()}`);
   return res.json();
 }
 async function waitFor(fn, what, timeout = 20000) {
@@ -89,15 +97,8 @@ try {
     await page.locator('.bar h1').first().waitFor();
   };
 
-  // ---- an account, and a product that expires in two days ----
+  // ---- no account, and a product that expires in two days ----
   await go('');
-  await go('#/account');
-  await page.getByRole('tab', { name: 'Create account' }).click();
-  await page.getByLabel('Email').fill(`reminders-${Date.now()}@example.com`);
-  await page.getByLabel('Password', { exact: true }).fill('reminder-test-8');
-  await page.getByRole('button', { name: 'Create account', exact: true }).click();
-  await waitFor(() => page.evaluate(async () => (await import('./js/cloud.js')).isSignedIn()), 'the sign-up');
-  const uid = await page.evaluate(() => JSON.parse(localStorage.getItem('pantri-auth')).user.id);
   await go('#/new');
   await page.locator('#pf-name').fill('Milk');
   const stock = page.locator('fieldset:has(legend:text("In stock right now"))');
@@ -105,30 +106,55 @@ try {
   await stock.locator('input[type=date]').fill(ymdIn(Date.now(), 2));
   await page.getByRole('button', { name: 'Save product' }).click();
   await page.waitForURL(/#\/product\//);
-  log('signed up against the local server and added milk that expires in two days');
+  log('no account: added milk that expires in two days');
 
-  // ---- switching reminders on registers this device and uploads the digests ----
-  await go('#/settings');
-  const card = page.locator('.section:has(> .section-title:text-is("Notifications")) .card');
-  await card.getByLabel('Daily reminder').click();
-  await page.locator('.toast:has-text("Daily reminder on")').waitFor();
-  const subs = await waitFor(async () => {
-    const rows = await admin(`push_subscriptions?user_id=eq.${uid}&select=endpoint,p256dh,auth,device`);
-    return rows.length && rows;
-  }, 'the push subscription row');
-  assert.deepEqual(subs.map(s => [s.endpoint, s.p256dh, s.auth]), [['https://push.example.test/send/integration-device', P256DH, AUTH]]);
-  const waiting = async () => admin(`reminders?user_id=eq.${uid}&sent_at=is.null&select=send_at,title,body,url,tag&order=send_at`);
-  let rows = await waitFor(async () => {
-    const r = await waiting();
+  const subsOf = user => admin(`push_subscriptions?user_id=eq.${user}&select=endpoint,p256dh,auth,device`);
+  const waitingFor = user => admin(`reminders?user_id=eq.${user}&sent_at=is.null&select=send_at,title,body,url,tag&order=send_at`);
+  const uploaded = user => waitFor(async () => {
+    const r = await waitingFor(user);
     return r.length && r;
   }, 'the uploaded reminders');
+  const device = [['https://push.example.test/send/integration-device', P256DH, AUTH]];
+
+  // ---- switching reminders on registers this device (anonymously) and uploads the digests ----
+  await go('#/notifications');
+  let card = page.locator('.card.reminders');
+  await card.getByLabel('Daily reminder').click();
+  await page.locator('.toast:has-text("Daily reminder on")').waitFor();
+  const anonymous = await page.evaluate(() => JSON.parse(localStorage.getItem('pantri-auth')).user);
+  assert.equal(anonymous.is_anonymous, true);
+  assert.equal((await authUser(anonymous.id)).is_anonymous, true);
+  assert.deepEqual((await subsOf(anonymous.id)).map(s => [s.endpoint, s.p256dh, s.auth]), device);
+  let rows = await uploaded(anonymous.id);
   assert.ok(rows.every(r => r.title === 'Pantri' && r.url === './#/' && r.tag === 'pantri-daily'), JSON.stringify(rows[0]));
   assert.ok(rows.every(r => localTime(r.send_at) === '09:00'), rows.map(r => localTime(r.send_at)).join(','));
   assert.ok(rows.some(r => /Milk/.test(r.body)), rows.map(r => r.body).join(' | '));
   assert.ok(rows.every(r => new Date(r.send_at) > Date.now()));
-  log(`switched on: subscription stored, ${rows.length} digests waiting on the server at 09:00 local (e.g. "${rows[0].body}")`);
+  assert.deepEqual(await admin(`pantries?user_id=eq.${anonymous.id}&select=user_id`), []);
+  log(`no account, switched on: anonymous user with this device's subscription and ${rows.length} digests at 09:00 local (e.g. "${rows[0].body}"); no pantry online`);
+
+  // ---- creating an account keeps the reminders: they move to it ----
+  await go('#/account');
+  await page.getByRole('tab', { name: 'Create account' }).click();
+  await page.getByLabel('Email').fill(`reminders-${Date.now()}@example.com`);
+  await page.getByLabel('Password', { exact: true }).fill('reminder-test-8');
+  await page.getByRole('button', { name: 'Create account', exact: true }).click();
+  await waitFor(() => page.evaluate(async () => (await import('./js/cloud.js')).isSignedIn()), 'the sign-up');
+  const uid = await page.evaluate(() => JSON.parse(localStorage.getItem('pantri-auth')).user.id);
+  await waitFor(async () => !(await authUser(anonymous.id)), 'the anonymous user to be deleted');
+  const subs = await waitFor(async () => {
+    const r = await subsOf(uid);
+    return r.length && r;
+  }, 'the push subscription row of the account');
+  assert.deepEqual(subs.map(s => [s.endpoint, s.p256dh, s.auth]), device);
+  rows = await uploaded(uid);
+  assert.ok(rows.some(r => /Milk/.test(r.body)) && rows.every(r => localTime(r.send_at) === '09:00'));
+  log(`created an account: the anonymous user is gone; the subscription and ${rows.length} digests are now the account's`);
 
   // ---- a new reminder time replaces the waiting ones ----
+  const waiting = () => waitingFor(uid);
+  await go('#/notifications');
+  card = page.locator('.card.reminders');
   await card.locator('#reminder-time').fill('18:30');
   await card.locator('#reminder-time').press('Tab');
   rows = await waitFor(async () => {

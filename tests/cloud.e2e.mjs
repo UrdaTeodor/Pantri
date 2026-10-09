@@ -58,6 +58,17 @@ async function admin(query, { method = 'GET', body } = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+/** An auth user as the admin API sees it, or null once deleted. */
+async function authUser(id) {
+  const res = await fetch(`${API}/auth/v1/admin/users/${id}`, { headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`admin user ${id}: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+/** SQL as postgres in the local database container. */
+const sql = q => execFileSync('docker', ['exec', 'supabase_db_pantri', 'psql', '-U', 'postgres', '-At', '-c', q], { encoding: 'utf8' }).trim();
+
 /** PostgREST as someone else: a signed-in user's token, or only the public key. */
 const asUser = (token, query, init = {}) => fetch(`${API}/rest/v1/${query}`, {
   ...init,
@@ -324,7 +335,8 @@ try {
   const refused = await unsigned.evaluate(async () => {
     const cloud = await import('./js/cloud.js');
     const out = [];
-    for (const call of [() => cloud.replaceReminders([]), () => cloud.savePushSubscription({ endpoint: 'https://x', keys: { p256dh: 'a', auth: 'b' } }), () => cloud.deletePushSubscription('https://x')]) {
+    // Without a session; then savePushSubscription signs in anonymously first, and the server checks the keys.
+    for (const call of [() => cloud.replaceReminders([]), () => cloud.deletePushSubscription('https://x'), () => cloud.savePushSubscription({ endpoint: 'https://x', keys: { p256dh: 'a', auth: 'b' } })]) {
       try {
         await call();
         out.push('resolved');
@@ -334,9 +346,9 @@ try {
     }
     return out;
   });
-  assert.deepEqual(refused, ['Not signed in.', 'Not signed in.', 'Not signed in.']);
+  assert.deepEqual(refused, ['Not signed in.', 'Not signed in.', 'Not valid push subscription keys.']);
   await unsigned.ctx.close();
-  log('replaceReminders: stores 2 (drops one 7 h late), rejects >60 items, bad dates, empty titles, and when signed out');
+  log('replaceReminders: stores 2 (drops one 7 h late), rejects >60 items, bad dates, empty titles, and without a session');
 
   // savePushSubscription / deletePushSubscription (a real browser would give an https push endpoint).
   const fake = subscriptionKeys();
@@ -399,7 +411,6 @@ try {
 
   // ---- 6. the cron job's path: Vault (project_url, cron_secret) → pg_net → the function ----
   try {
-    const sql = q => execFileSync('docker', ['exec', 'supabase_db_pantri', 'psql', '-U', 'postgres', '-At', '-c', q], { encoding: 'utf8' }).trim();
     assert.equal(sql("select schedule from cron.job where jobname = 'pantri-send-reminders'"), '*/10 * * * *');
     const id = sql('select private.send_due_reminders()');
     const answer = await waitFor(() => sql(`select status_code || ' ' || content from net._http_response where id = ${id}`), 'the cron request');
@@ -467,6 +478,83 @@ try {
   await a2.locator('.seg button:text("Sign in")').waitFor();
   assert.ok((await productNames(a2)).length > 0);
   log('sign out keeps the pantry on the phone; "sign out and remove" leaves an empty pantry');
+
+  // ---- 10. reminders without an account: an anonymous user that can't keep a pantry online ----
+  const p1 = await device('P1');
+  await addProduct(p1, 'Milk');
+  const keysP1 = subscriptionKeys();
+  const endpointP1 = `https://push.example.com/send/p1-${run}`;
+  const reg = await p1.evaluate(async sub => {
+    const cloud = await import('./js/cloud.js');
+    const user = await cloud.savePushSubscription(sub, { device: 'Phone without an account' });
+    const waiting = await cloud.replaceReminders([{ sendAt: new Date(Date.now() + 3600e3).toISOString(), title: 'Pantri', body: '1 to use soon: Milk', url: './#/', tag: 'pantri-daily' }]);
+    return { user, waiting, signedIn: cloud.isSignedIn(), hasSession: cloud.hasSession(), statusSignedIn: cloud.cloudStatus().signedIn };
+  }, { endpoint: endpointP1, keys: { p256dh: keysP1.p256dh, auth: keysP1.auth } });
+  assert.deepEqual([reg.signedIn, reg.hasSession, reg.statusSignedIn, reg.waiting], [false, true, false, 1]);
+  assert.equal((await authUser(reg.user)).is_anonymous, true);
+  assert.deepEqual(await admin(`push_subscriptions?user_id=eq.${reg.user}&select=endpoint,device`), [{ endpoint: endpointP1, device: 'Phone without an account' }]);
+  assert.deepEqual((await admin(`reminders?user_id=eq.${reg.user}&select=body`)).map(r => r.body), ['1 to use soon: Milk']);
+  await go(p1, '#/more');
+  assert.match(await p1.locator('.row:has-text("Account & online backup") .row-sub').textContent(), /Not signed in/);
+  await addProduct(p1, 'Bread');
+  await p1.waitForTimeout(3000); // longer than the sync's pause after a change
+  assert.deepEqual(await admin(`pantries?user_id=eq.${reg.user}&select=user_id`), []);
+  const tokenP1 = await p1.evaluate(() => JSON.parse(localStorage.getItem('pantri-auth')).access_token);
+  for (const [fn, body] of [['save_pantry', { p_state: { products: [], batches: [] }, p_base_rev: 0 }], ['stash_pantry', { p_state: { products: [], batches: [] } }]]) {
+    const r = await asUser(tokenP1, `rpc/${fn}`, { method: 'POST', body: JSON.stringify(body) });
+    assert.equal(r.status, 403, fn);
+    assert.match((await r.json()).message, /Create an account to keep the pantry online/);
+  }
+  log('no account: an anonymous user holds the subscription and reminders; the pantry is never uploaded, and the server refuses it');
+
+  const emailC = `c-${run}@example.com`;
+  await signInForm(p1, emailC, PASSWORD, { create: true });
+  await synced(p1);
+  const uidC = await userId(p1);
+  assert.notEqual(uidC, reg.user);
+  await waitFor(async () => !(await authUser(reg.user)), 'the anonymous user to be deleted');
+  assert.deepEqual(await admin(`reminders?user_id=eq.${reg.user}&select=id`), []);
+  assert.deepEqual(await admin(`push_subscriptions?endpoint=eq.${encodeURIComponent(endpointP1)}&select=id`), []);
+  [row] = await admin(`pantries?user_id=eq.${uidC}&select=state`);
+  assert.deepEqual(row.state.products.map(p => p.name).sort(), ['Bread', 'Milk']);
+  const tokenC = await p1.evaluate(() => JSON.parse(localStorage.getItem('pantri-auth')).access_token);
+  const notAnonymous = await asUser(tokenC, 'rpc/forget_anonymous_device', { method: 'POST', body: '{}' });
+  assert.equal(notAnonymous.status, 403);
+  assert.ok(await authUser(uidC));
+  log('creating an account on that phone deletes its anonymous user (subscription, reminders) and uploads the pantry; accounts can\'t use forget_anonymous_device');
+
+  const p2 = await device('P2');
+  const keysP2 = subscriptionKeys();
+  const userP2 = await p2.evaluate(async sub => (await import('./js/cloud.js')).savePushSubscription(sub),
+    { endpoint: `https://push.example.com/send/p2-${run}`, keys: { p256dh: keysP2.p256dh, auth: keysP2.auth } });
+  assert.equal((await authUser(userP2)).is_anonymous, true);
+  const forgotten = await p2.evaluate(async () => {
+    const cloud = await import('./js/cloud.js');
+    await cloud.forgetThisDevice();
+    return { hasSession: cloud.hasSession(), stored: localStorage.getItem('pantri-auth') };
+  });
+  assert.deepEqual(forgotten, { hasSession: false, stored: null });
+  assert.equal(await authUser(userP2), null);
+  assert.deepEqual(await admin(`push_subscriptions?user_id=eq.${userP2}&select=id`), []);
+  log('switching off without an account: forgetThisDevice() deletes the anonymous user and its subscription, and ends the session');
+
+  // The daily clean-up: anonymous users without a device for a week go; ones with a device stay.
+  const anonymousSignUp = async () => (await (await fetch(`${API}/auth/v1/signup`, {
+    method: 'POST', headers: { apikey: KEY, 'Content-Type': 'application/json' }, body: '{}',
+  })).json());
+  const idle = await anonymousSignUp();
+  const busy = await anonymousSignUp();
+  const keysBusy = subscriptionKeys();
+  const saved = await asUser(busy.access_token, 'rpc/save_push_subscription', {
+    method: 'POST', body: JSON.stringify({ p_endpoint: `https://push.example.com/send/busy-${run}`, p_p256dh: keysBusy.p256dh, p_auth: keysBusy.auth }),
+  });
+  assert.equal(saved.status, 204, await saved.text());
+  sql(`update auth.users set created_at = now() - interval '8 days' where id in ('${idle.user.id}', '${busy.user.id}')`);
+  assert.ok(Number(sql('select private.forget_idle_anonymous_users()')) >= 1);
+  assert.equal(await authUser(idle.user.id), null);
+  assert.ok(await authUser(busy.user.id));
+  assert.equal(sql("select schedule from cron.job where jobname = 'pantri-forget-idle-anonymous'"), '17 3 * * *');
+  log('daily clean-up (cron 03:17): anonymous users without a device for a week are deleted, ones with a device stay');
 } finally {
   await browser.close();
   await server.close();

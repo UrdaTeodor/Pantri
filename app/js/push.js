@@ -119,29 +119,28 @@ export async function unsubscribe() {
   return sub.endpoint;
 }
 
-let savedFor = null; // the account this device's subscription was last sent to (this session)
+let savedFor = null; // the user (account or anonymous) this device's subscription was last sent to (this session)
 
-async function save(sub, account) {
+async function save(sub) {
   try {
-    await savePushSubscription(sub.toJSON(), { device: deviceLabel() });
+    savedFor = await savePushSubscription(sub.toJSON(), { device: deviceLabel() });
   } catch (e) {
     throw new PushError('server', e);
   }
-  savedFor = account;
 }
 
 /**
  * Switch this device on: ask for the permission, subscribe, and register the subscription with the
- * server. Call it straight from a tap, before anything else is awaited: the permission prompt needs
- * the tap (iPhone/iPad refuse it otherwise).
+ * server (for the account, or anonymously on a phone without one). Call it straight from a tap, before
+ * anything else is awaited: the permission prompt needs the tap (iPhone/iPad refuse it otherwise).
  */
-export async function enablePush(account = 'me') {
+export async function enablePush() {
   if (permission() !== 'granted') {
     const answer = await Notification.requestPermission();
     if (answer !== 'granted') throw new PushError(answer === 'denied' ? 'denied' : 'dismissed');
   }
   const sub = await subscribe();
-  await save(sub, account);
+  await save(sub);
   return sub;
 }
 
@@ -160,11 +159,12 @@ export async function disablePush() {
 
 /**
  * Register this device's subscription again (push services may replace it), or recreate it if the
- * browser dropped it. Once per session and account; never asks for the permission.
+ * browser dropped it. Once per app start and user (`account`: the session's user id); never asks for
+ * the permission.
  */
-export async function refreshPushSubscription(account = 'me') {
+export async function refreshPushSubscription(account) {
   if (savedFor === account || pushSupport() !== 'ok' || permission() !== 'granted') return false;
-  await save(await subscribe(), account);
+  await save(await subscribe());
   return true;
 }
 

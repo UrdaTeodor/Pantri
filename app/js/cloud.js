@@ -2,6 +2,9 @@
 // All of it is off unless config.js has a Supabase URL and key: then cloudConfigured is false, nothing
 // is loaded or fetched, and the functions below reject. The Supabase client (vendor/supabase.js) is
 // only loaded when needed: when someone signs in, or at start-up when this phone is signed in.
+// A phone without an account that turns on notifications signs in anonymously: that session can only
+// register the phone and its reminders (the server refuses to store a pantry for it), and everything
+// here treats it as signed out: isSignedIn() is false, and the pantry isn't synced.
 
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { getState, subscribe, replaceState, eraseAll } from './store.js';
@@ -127,6 +130,9 @@ function client() {
   return clientPromise;
 }
 
+/** An account, as opposed to the anonymous session of a phone that only gets reminders. */
+const isAccount = s => !!s && !(s.user && s.user.is_anonymous);
+
 function setSession(next) {
   const before = session ? session.user.id : null;
   session = next && next.user ? next : null;
@@ -136,28 +142,73 @@ function setSession(next) {
     status = { phase: 'idle', message: '', choice: null };
     if (!after) recovering = false;
     for (const fn of [...authListeners]) call(fn, session);
-    if (after) schedule(0);
+    if (isAccount(session)) schedule(0);
   }
   emit();
 }
 
-/** The Supabase client, once the signed-in session is confirmed (refreshed if needed). */
-async function authed() {
+/** The Supabase client and the session, confirmed (refreshed if needed). */
+async function current() {
   if (!cloudConfigured) throw notConfigured();
   if (!session) throw notSignedIn();
   const c = await client();
   const { data, error } = await c.auth.getSession();
   if (error) throw failure(error, error.status);
   if (!data.session) throw notSignedIn();
-  return c;
+  return { c, s: data.session };
 }
 
-/** Whether this phone is signed in (synchronous). */
+/** The Supabase client, once the session is confirmed (refreshed if needed). */
+async function authed() {
+  return (await current()).c;
+}
+
+/** Whether this phone is signed in to an account (synchronous). */
 export function isSignedIn() {
+  return isAccount(session);
+}
+
+/** Whether this phone has a session for reminders: an account, or an anonymous one (synchronous). */
+export function hasSession() {
   return !!session;
 }
 
-/** Calls fn(session | null) now and whenever the signed-in account changes. Returns an unsubscribe function. */
+let anonymous = null; // the anonymous sign-in in progress
+
+/**
+ * The session to register this phone's reminders with: the account, or else an anonymous one, created
+ * now if needed (also when the server no longer knows this phone's anonymous session).
+ */
+async function sessionForReminders() {
+  if (session) {
+    try {
+      return await current();
+    } catch (e) {
+      if (e.offline || storedSession()) throw e; // offline, or still signed in: try again later
+      setSession(null); // the server no longer knows this session
+    }
+  }
+  if (!anonymous) {
+    anonymous = (async () => {
+      const c = await client();
+      const { data, error } = await c.auth.signInAnonymously();
+      if (error) throw authFailure(error);
+      setSession(data.session);
+      return { c, s: data.session };
+    })().finally(() => {
+      anonymous = null;
+    });
+  }
+  return anonymous;
+}
+
+/** Create this phone's anonymous session for reminders, unless it has a session already. */
+export async function ensureSession() {
+  if (!cloudConfigured) throw notConfigured();
+  await sessionForReminders();
+}
+
+/** Calls fn(session | null) now and whenever the session changes (account or anonymous). Returns an unsubscribe function. */
 export function onAuth(fn) {
   authListeners.add(fn);
   call(fn, session);
@@ -185,15 +236,16 @@ function emit() {
  * 'choose' (both this phone and the account have a pantry: `choice` holds { local, remote } summaries).
  */
 export function cloudStatus() {
-  const m = session ? meta.load() : null;
+  const signedIn = isAccount(session);
+  const m = signedIn ? meta.load() : null;
   return {
     configured: cloudConfigured,
-    signedIn: !!session,
-    email: session ? session.user.email || '' : '',
+    signedIn,
+    email: signedIn ? session.user.email || '' : '',
     recovering,
     ...status,
     syncedAt: m ? m.syncedAt : null,
-    pending: !!session && engine.isDirty(),
+    pending: signedIn && engine.isDirty(),
   };
 }
 
@@ -295,7 +347,7 @@ function run(opts) {
         again = false;
         await runOnce(o);
         o = {};
-      } while (again && session && !paused);
+      } while (again && isAccount(session) && !paused);
     } finally {
       running = null;
     }
@@ -305,7 +357,7 @@ function run(opts) {
 
 /** Sync now, or once more after the sync that is running. Never rejects: cloudStatus() tells how it went. */
 export function syncNow() {
-  if (!cloudConfigured || !session || paused) return Promise.resolve();
+  if (!cloudConfigured || !isAccount(session) || paused) return Promise.resolve();
   if (running) {
     again = true;
     return running;
@@ -316,7 +368,7 @@ export function syncNow() {
 /** After phase 'choose': keep this phone's pantry ('local') or take the online one ('remote'). */
 export async function chooseCopy(which) {
   while (running) await running;
-  if (!session) throw notSignedIn();
+  if (!isAccount(session)) throw notSignedIn();
   await run({ choice: which });
   if (status.phase === 'offline') throw new Error('No connection. Try again when you are online.');
   if (status.phase === 'error') throw new Error(status.message);
@@ -351,24 +403,71 @@ function authFailure(error) {
 /** Create an account. Resolves to { needsConfirmation } (true if the project requires confirming the email). */
 export async function signUp(email, password) {
   const c = await client();
+  const before = await anonymousToken();
   const { data, error } = await c.auth.signUp({ email, password, options: { emailRedirectTo: appUrl() } });
   if (error) throw authFailure(error);
   if (!data.session) return { needsConfirmation: true };
-  signedIn(data.session);
+  signedIn(data.session, before);
   return { needsConfirmation: false };
 }
 
 export async function signIn(email, password) {
   const c = await client();
+  const before = await anonymousToken();
   const { data, error } = await c.auth.signInWithPassword({ email, password });
   if (error) throw authFailure(error);
-  signedIn(data.session);
+  signedIn(data.session, before);
 }
 
-/** Someone signed in on purpose: the sign-in rules apply (upload, take the online copy, or ask). */
-function signedIn(s) {
+/**
+ * Someone signed in on purpose: the sign-in rules apply (upload, take the online copy, or ask). The
+ * anonymous user this phone had for reminders is deleted on the server (the phone registers again,
+ * with the account, if reminders are on).
+ */
+function signedIn(s, anonymousBefore = null) {
   writeJson(SYNC_KEY, null); // bookkeeping left from a session that ended by itself doesn't count
   setSession(s);
+  if (anonymousBefore) forgetAnonymous(anonymousBefore);
+}
+
+/** The access token of this phone's anonymous session (refreshed if needed), or null. */
+async function anonymousToken() {
+  if (!session || isAccount(session)) return null;
+  try {
+    return (await current()).s.access_token;
+  } catch {
+    return null;
+  }
+}
+
+/** Delete an anonymous user (its push subscription and reminders) on the server. Resolves to whether that worked. */
+async function forgetAnonymous(token) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/forget_anonymous_device`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    return res.ok;
+  } catch {
+    return false; // offline: the server deletes it within a week once it has no device left
+  }
+}
+
+/**
+ * Notifications switched off on a phone without an account: delete its anonymous user on the server
+ * (with the push subscription and reminders) and end the session here. Does nothing for an account.
+ */
+export async function forgetThisDevice() {
+  if (!session || isAccount(session)) return;
+  const token = await anonymousToken();
+  if (token && !(await forgetAnonymous(token))) return; // kept: switching on and off again retries
+  try {
+    const c = await client();
+    await c.auth.signOut({ scope: 'local' });
+  } catch { /* the client couldn't load: the stored session is dropped below */ }
+  writeJson(AUTH_KEY, null);
+  setSession(null);
 }
 
 /** Email a link that opens the app and lets the user choose a new password. */
@@ -411,7 +510,7 @@ async function endSession() {
 
 /** Sign out on this phone. The pantry stays here unless `removeData`; the online copy stays in the account. */
 export async function signOut({ removeData = false } = {}) {
-  if (!session) return;
+  if (!isAccount(session)) return;
   if (!removeData) await syncNow(); // a last upload of recent changes (if online)
   paused = true;
   try {
@@ -470,27 +569,29 @@ export async function restoreVersion(id) {
 // ---------- reminders (used by the device side of notifications) ----------
 
 /**
- * Store this device's push subscription for the signed-in user (updated if the endpoint is known).
- * `sub` is PushSubscription.toJSON(): { endpoint, keys: { p256dh, auth } }.
+ * Store this device's push subscription (updated if the endpoint is known) for the account, or for an
+ * anonymous session created now if this phone has no account. `sub` is PushSubscription.toJSON():
+ * { endpoint, keys: { p256dh, auth } }. Resolves to the id of the user it was stored for.
  */
 export async function savePushSubscription(sub, { device } = {}) {
   if (!sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
     throw new Error('savePushSubscription: expected PushSubscription.toJSON() ({ endpoint, keys: { p256dh, auth } }).');
   }
-  const c = await authed();
+  const { c, s } = await sessionForReminders();
   check(await c.rpc('save_push_subscription', {
     p_endpoint: sub.endpoint, p_p256dh: sub.keys.p256dh, p_auth: sub.keys.auth, p_device: device || deviceLabel(),
   }));
+  return s.user.id;
 }
 
-/** Forget a push subscription (by endpoint) of the signed-in user. */
+/** Forget a push subscription (by endpoint) of this phone's user. */
 export async function deletePushSubscription(endpoint) {
   const c = await authed();
   check(await c.from('push_subscriptions').delete().eq('endpoint', endpoint));
 }
 
 /**
- * Replace the signed-in user's unsent reminders, atomically, with
+ * Replace the unsent reminders of this phone's user (account or anonymous), atomically, with
  * items: [{ sendAt: ISO-8601 string, title, body, url, tag }] (at most 60). Items more than 6 hours late
  * and ones that were already sent (same sendAt, title and tag) are skipped. Resolves to how many wait.
  */
@@ -529,18 +630,18 @@ export function initCloud({ notify, openAccount } = {}) {
   if (session) client().catch(() => {}); // restores (and refreshes) the session
 
   subscribe(() => {
-    if (!session) return;
+    if (!isAccount(session)) return;
     engine.noteLocalChange();
     if (status.phase !== 'choose') schedule();
     emit();
   });
   addEventListener('online', () => {
-    if (session && status.phase !== 'choose') schedule(0);
+    if (isAccount(session) && status.phase !== 'choose') schedule(0);
   });
   document.addEventListener('visibilitychange', () => {
-    if (!session || status.phase === 'choose') return;
+    if (!isAccount(session) || status.phase === 'choose') return;
     if (document.visibilityState === 'visible') schedule(0);
     else if (engine.isDirty()) syncNow(); // upload before the app is put away
   });
-  if (session) schedule(0);
+  if (isAccount(session)) schedule(0);
 }

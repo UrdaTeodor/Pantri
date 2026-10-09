@@ -1,23 +1,24 @@
-// Settings → Notifications: a daily reminder on this device (Web Push, sent by the server), with
-// guidance for each case where that can't work yet, and the popup that offers it on the Today screen.
-// Only shown when the cloud features are set up.
+// More → Notifications: a daily reminder on this device (Web Push, sent by the server), with guidance
+// for each case where that can't work yet, and the popup that offers it on the Today screen. No account
+// is needed: a phone without one registers anonymously (see cloud.js). Only shown when the cloud
+// features are set up.
 
 import { html, useState, useEffect, useReducer } from './lib.js';
-import { navigate, showToast, ask, currentRoute, currentSheets } from './nav.js';
-import { useApp, Icon } from './kit.js';
+import { showToast, ask, currentRoute, currentSheets } from './nav.js';
+import { useApp, Header, Icon } from './kit.js';
 import { updateSettings, getState } from '../store.js';
-import { cloudConfigured, isSignedIn, onAuth } from '../cloud.js';
+import { cloudConfigured, isSignedIn, onAuth, forgetThisDevice } from '../cloud.js';
 import {
   pushSupport, permission, isIOS, enablePush, disablePush, currentSubscription, showTestNotification,
 } from '../push.js';
 import { reminderStatus, onReminderStatus, syncReminders } from '../reminders.js';
 import { dayText, timeText } from '../format.js';
 
-/** The signed-in account ('me' until the session says who), or null. */
-function useAccount() {
-  const [account, setAccount] = useState(() => (isSignedIn() ? 'me' : null));
-  useEffect(() => onAuth(session => setAccount(session ? (session.user && session.user.id) || 'me' : null)), []);
-  return account;
+/** Whether this phone is signed in to an account (re-rendered when that changes). */
+function useSignedIn() {
+  const [signedIn, setSignedIn] = useState(isSignedIn);
+  useEffect(() => onAuth(() => setSignedIn(isSignedIn())), []);
+  return signedIn;
 }
 
 function useReminderStatus() {
@@ -71,9 +72,10 @@ function Preview({ schedule, now }) {
     : 'Nothing needs attention in the next two weeks, so no reminder is planned yet.'}</p>`;
 }
 
-export function RemindersSettings() {
+/** The switch and its settings, or what this device needs first. */
+function RemindersCard() {
   const { state, now } = useApp();
-  const account = useAccount();
+  const signedIn = useSignedIn();
   const status = useReminderStatus();
   const [want, setWant] = useState(null); // where the switch is going while it is being switched
   const [problem, setProblem] = useState('');
@@ -89,15 +91,15 @@ export function RemindersSettings() {
     return () => { live = false; };
   }, [on, want]);
   useEffect(() => {
-    if (on && account && !status.schedule) syncReminders();
-  }, [on, account]);
+    if (on && !status.schedule) syncReminders();
+  }, [on]);
 
   // Straight from the tap: enablePush() asks for the permission before anything else.
   const turnOn = async () => {
     setProblem('');
     setWant(true);
     try {
-      await enablePush(account || 'me');
+      await enablePush();
       updateSettings({ remindersOn: true });
       await syncReminders();
       showToast(`Daily reminder on, at ${clockText(s.reminderTime)}`);
@@ -112,7 +114,13 @@ export function RemindersSettings() {
     setWant(false);
     updateSettings({ remindersOn: false });
     try {
-      await Promise.all([syncReminders(), disablePush().catch(() => {})]);
+      if (isSignedIn()) {
+        await Promise.all([syncReminders(), disablePush().catch(() => {})]);
+      } else {
+        // No account: nothing of this phone stays on the server.
+        await disablePush().catch(() => {});
+        await forgetThisDevice();
+      }
     } finally {
       setWant(null);
     }
@@ -133,57 +141,63 @@ export function RemindersSettings() {
     }
   };
 
-  let body;
   if (support === 'ios-browser') {
-    body = html`
+    return html`
       <p>To get reminders on iPhone or iPad, add Pantri to the Home Screen first: tap Share → <b>Add to Home Screen</b>, then open Pantri from the new icon.</p>
       <p class="hint">Needs iOS or iPadOS 16.4 or later.</p>`;
-  } else if (support === 'unsupported') {
-    body = html`
+  }
+  if (support === 'unsupported') {
+    return html`
       <p>This browser can't show notifications from Pantri.</p>
       <p class="hint">${isIOS() ? 'iPhone and iPad need iOS or iPadOS 16.4 or later.' : 'On Android, use Chrome. On iPhone or iPad, add Pantri to the Home Screen.'}</p>`;
-  } else if (support === 'no-key') {
-    body = html`<p class="muted">Notifications aren't set up for this copy of Pantri.</p>`;
-  } else if (!account) {
-    body = html`
-      <p>Get a reminder each day when something needs checking, has expired or should be used soon.</p>
-      <p class="hint">Reminders are sent from your account, so sign in first.</p>
-      <a class="btn primary block" href="#/account" onClick=${e => { e.preventDefault(); navigate('#/account'); }}>Sign in</a>`;
-  } else if (perm === 'denied') {
-    body = html`
+  }
+  if (support === 'no-key') return html`<p class="muted">Notifications aren't set up for this copy of Pantri.</p>`;
+  if (perm === 'denied') {
+    return html`
       <p class="warn-text">Notifications are blocked for Pantri on this device.</p>
       <p class="hint">${unblockHelp()} Then come back here.</p>
       ${on && html`<button class="link-btn" onClick=${turnOff}>Stop the daily reminder</button>`}`;
-  } else {
-    body = html`
-      <label class="switch">
-        <input type="checkbox" checked=${want == null ? on : want} disabled=${want != null}
-          onChange=${e => (e.target.checked ? turnOn() : turnOff())} />
-        <span>Daily reminder</span>
-      </label>
-      <p class="hint">${on
-        ? `Comes at ${clockText(s.reminderTime)} on days when something needs checking, has expired or should be used soon.`
-        : 'One notification a day, only when something needs checking, has expired or should be used soon.'}</p>
-      ${problem && html`<p class="error" role="alert">${problem}</p>`}
-      ${on && html`
-        <div class="field reminder-time">
-          <label for="reminder-time">Time</label>
-          <input id="reminder-time" class="input" type="time" value=${s.reminderTime}
-            onChange=${e => e.target.value && setTime(e.target.value)} />
-        </div>
-        ${here === false && want == null && html`
-          <p class="hint">This device doesn't get them yet.
-            <button class="link-btn inline" onClick=${turnOn}>Get them here too</button></p>`}
-        <${Preview} schedule=${status.schedule} now=${now} />
-        ${status.error && html`<p class="hint warn-text">Couldn't update the reminders on the server. Trying again later.</p>`}
-        <button class="btn block" onClick=${test}>Send a test notification</button>`}`;
   }
-
   return html`
-    <section class="section">
-      <h2 class="section-title">Notifications</h2>
-      <div class="card pad reminders">${body}</div>
-    </section>`;
+    <label class="switch">
+      <input type="checkbox" checked=${want == null ? on : want} disabled=${want != null}
+        onChange=${e => (e.target.checked ? turnOn() : turnOff())} />
+      <span>Daily reminder</span>
+    </label>
+    <p class="hint">${on
+      ? `Comes at ${clockText(s.reminderTime)} on days when something needs checking, has expired or should be used soon.`
+      : 'One notification a day, only when something needs checking, has expired or should be used soon. No account needed.'}</p>
+    ${problem && html`<p class="error" role="alert">${problem}</p>`}
+    ${on && html`
+      <div class="field reminder-time">
+        <label for="reminder-time">Time</label>
+        <input id="reminder-time" class="input" type="time" value=${s.reminderTime}
+          onChange=${e => e.target.value && setTime(e.target.value)} />
+      </div>
+      ${here === false && want == null && html`
+        <p class="hint">This device doesn't get them yet.
+          <button class="link-btn inline" onClick=${turnOn}>Get them here too</button></p>`}
+      <${Preview} schedule=${status.schedule} now=${now} />
+      ${status.error && html`<p class="hint warn-text">Couldn't update the reminders on the server. Trying again later.</p>`}
+      <button class="btn block" onClick=${test}>Send a test notification</button>`}
+    ${!signedIn && html`
+      <p class="hint reminder-privacy">So the reminder arrives while Pantri is closed, the server keeps this phone's
+        upcoming reminder texts (like <q>1 to use soon: Milk</q>) — nothing else. Your pantry stays on this phone.
+        Switching the reminder off deletes them.</p>`}`;
+}
+
+export function Notifications() {
+  return html`
+    <${Header} title="Notifications" back="#/more" />
+    <main class="page">
+      <div class="card pad reminders"><${RemindersCard} /></div>
+    </main>`;
+}
+
+/** The status line in the More menu: "Daily reminder at 09:00" or "Off". */
+export function NotificationsStatusText() {
+  const { state } = useApp();
+  return state.settings.remindersOn ? `Daily reminder at ${clockText(state.settings.reminderTime)}` : 'Off';
 }
 
 // ---------- the offer: a popup suggesting the daily reminder ----------
@@ -195,8 +209,6 @@ const OFFER_KEY = 'pantri-reminder-offer'; // this device: { until } (wait) or {
 const WEEK = 7 * 864e5;
 let offeredThisRun = false;
 let offering = false;
-let accountId = null;
-let resumeAfterSignIn = false; // the popup sent someone to sign in: offer again once they have
 
 function readOffer() {
   try {
@@ -211,17 +223,9 @@ function writeOffer(value) {
   } catch { /* no storage: the offer simply comes back next time */ }
 }
 
-onAuth(session => {
-  accountId = session ? (session.user && session.user.id) || 'me' : null;
-  if (session && resumeAfterSignIn) {
-    resumeAfterSignIn = false;
-    setTimeout(() => offerReminders({ force: true, delay: 0 }), 800);
-  }
-});
-
 /**
- * Which popup fits this device now: 'turn-on'; 'sign-in' (reminders come from an account); 'install'
- * (iPhone/iPad in a browser tab) — or null: not set up here, blocked, already on, or asked to wait.
+ * Which popup fits this device now: 'turn-on'; 'install' (iPhone/iPad in a browser tab) — or null:
+ * not set up here, blocked, already on, or asked to wait.
  */
 export async function offerKind(state, { now = Date.now(), force = false } = {}) {
   if (!cloudConfigured) return null;
@@ -230,7 +234,6 @@ export async function offerKind(state, { now = Date.now(), force = false } = {})
   const support = pushSupport();
   if (support === 'ios-browser') return 'install';
   if (support !== 'ok' || permission() === 'denied') return null;
-  if (!isSignedIn()) return 'sign-in';
   if (state.settings.remindersOn && permission() === 'granted' && (await currentSubscription().catch(() => null))) return null;
   return 'turn-on';
 }
@@ -266,17 +269,17 @@ function ReminderOffer({ kind, close }) {
   const never = () => {
     writeOffer({ never: true });
     close('never');
-    showToast('You can turn the daily reminder on any time in Settings → Notifications.');
+    showToast('You can turn the daily reminder on any time in More → Notifications.');
   };
   // Straight from the tap: enablePush() asks for the permission before anything else.
   const turnOn = async () => {
     setProblem('');
     setBusy(true);
     try {
-      await enablePush(accountId || 'me');
+      await enablePush();
       updateSettings({ remindersOn: true });
       await syncReminders();
-      writeOffer({ never: true }); // from now on it's the switch in Settings
+      writeOffer({ never: true }); // from now on it's the switch in More → Notifications
       close('on');
       showToast(`Daily reminder on, at ${time}`);
     } catch (err) {
@@ -285,10 +288,6 @@ function ReminderOffer({ kind, close }) {
     } finally {
       setBusy(false);
     }
-  };
-  const signIn = () => {
-    resumeAfterSignIn = true;
-    close('sign-in').then(() => navigate('#/account'));
   };
 
   if (kind === 'install') {
@@ -308,14 +307,9 @@ function ReminderOffer({ kind, close }) {
       <div class="offer-icon"><${Icon} name="bell" size=${28} /></div>
       <h2>${state.settings.remindersOn ? 'Get the daily reminder on this device too?' : 'Get a daily reminder?'}</h2>
       <p>One notification at ${time} on days when something needs checking, has expired or should be used soon. Nothing on quiet days.</p>
-      ${kind === 'sign-in'
-        ? html`
-          <p class="hint">Reminders come from a free Pantri account, which also keeps your pantry backed up online.</p>
-          <button class="btn primary block" onClick=${signIn}>Create an account or sign in</button>`
-        : html`
-          <p class="hint">You can change the time or switch it off in Settings.</p>
-          ${problem && html`<p class="error" role="alert">${problem}</p>`}
-          <button class="btn primary block" onClick=${turnOn} disabled=${busy}>${busy ? 'Turning on…' : 'Turn on reminders'}</button>`}
+      <p class="hint">No account needed. You can change the time or switch it off in More → Notifications.</p>
+      ${problem && html`<p class="error" role="alert">${problem}</p>`}
+      <button class="btn primary block" onClick=${turnOn} disabled=${busy}>${busy ? 'Turning on…' : 'Turn on reminders'}</button>
       <button class="btn block" onClick=${later}>Not now</button>
       <button class="link-btn center" onClick=${never}>Don't ask again</button>
     </div>`;

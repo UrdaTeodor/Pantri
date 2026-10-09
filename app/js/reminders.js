@@ -5,8 +5,8 @@
 
 import { analyze, todayLists, sitesOf } from './model.js';
 import { getState, subscribe } from './store.js';
-import { cloudConfigured, isSignedIn, onAuth, replaceReminders } from './cloud.js';
-import { refreshPushSubscription } from './push.js';
+import { cloudConfigured, hasSession, ensureSession, onAuth, replaceReminders } from './cloud.js';
+import { refreshPushSubscription, pushSupport, permission } from './push.js';
 
 export const REMINDER_TAG = 'pantri-daily'; // a new digest replaces the previous one
 const TITLE = 'Pantri';
@@ -219,10 +219,12 @@ export function syncReminders() {
 }
 
 /**
- * While reminders are on and someone is signed in, keep the server's schedule in step with the pantry:
- * at startup and sign-in, when the app comes back to the foreground, and `delay` ms after changes.
- * An unchanged schedule isn't sent again; a failed upload is retried later. Switching reminders off
- * clears the schedule this device uploaded. Returns a function that stops it.
+ * While reminders are on, keep the server's schedule in step with the pantry: at startup and sign-in,
+ * when the app comes back to the foreground, and `delay` ms after changes. It goes to the account, or
+ * on a phone without one to its anonymous session (created again if it is gone, e.g. after signing out
+ * of the account, as long as this phone may show notifications). An unchanged schedule isn't sent
+ * again; a failed upload is retried later. Switching reminders off clears the schedule this device
+ * uploaded. Returns a function that stops it.
  */
 export function startReminderSync({ delay = 5000 } = {}) {
   if (sync) return sync.stop;
@@ -250,10 +252,16 @@ export function startReminderSync({ delay = 5000 } = {}) {
 
   async function upload() {
     const state = getState();
-    if (!state || !account || !isSignedIn()) return;
+    if (!state) return;
     const on = state.settings.remindersOn === true;
     const items = on ? scheduleOf(state) : [];
     if (on && status.schedule !== items) setStatus({ schedule: items });
+    if (!hasSession()) {
+      // onAuth() below registers the subscription and schedules the upload once there is a session.
+      if (on && pushSupport() === 'ok' && permission() === 'granted') await ensureSession();
+      return;
+    }
+    if (!account) return;
     const json = JSON.stringify(items);
     const last = lastSent();
     const ours = !!last && last.account === account;
@@ -297,8 +305,8 @@ export function startReminderSync({ delay = 5000 } = {}) {
   // Last: onAuth reports the current session right away.
   offAuth = onAuth(session => {
     account = session ? (session.user && session.user.id) || 'me' : null;
+    later(session ? 0 : delay);
     if (!session) return;
-    later(0);
     const state = getState();
     if (state && state.settings.remindersOn) refreshPushSubscription(account).catch(() => {});
   });

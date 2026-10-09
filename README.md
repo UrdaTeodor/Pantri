@@ -36,8 +36,9 @@ When a new version is published, the app shows "A new version of the app is read
 1. **Scan** your products. Give the ones that get used regularly a usage rate and a minimum to keep.
 2. **More → Locations & sites:** shape your storage. Keeping stock in more than one place? Add each place as a site.
 3. **Optional, More → Settings:** opening hours, closures and reminder windows, if the defaults don't fit.
-4. **More → Account & online backup** (optional): sign in to keep a copy online. Then **Settings → Notifications** turns on the daily reminder.
-5. Without an account, **More → Backup & restore** saves a backup file. Do that now and then, because it's the only copy outside the phone.
+4. **More → Notifications:** turn on the daily reminder (no account needed).
+5. **More → Account & online backup** (optional): sign in to keep a copy online.
+6. Without an account, **More → Backup & restore** saves a backup file. Do that now and then, because it's the only copy outside the phone.
 
 ## Development
 

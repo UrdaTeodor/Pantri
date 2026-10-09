@@ -89,6 +89,11 @@ The second command should show `200` and `{"due":0,...}`. To change a value late
 - **URL Configuration**: Site URL `https://urdateodor.github.io/Pantri/`, and under Redirect URLs add
   `https://urdateodor.github.io/Pantri/**`. Password-reset links return there.
 - **Password**: set the minimum length to 8 (the app asks for 8 when creating an account).
+- **Sign In / Providers → Allow anonymous sign-ins**: on. A phone without an account that turns on
+  the daily reminder signs in anonymously: that user can only hold the phone's push subscription and
+  reminders (the database refuses to store a pantry for it). It is deleted when the phone switches
+  the reminder off or signs in to an account, and a daily job deletes anonymous users that have had
+  no device for a week.
 - **Emails → SMTP Settings**: only password-reset emails are sent. Supabase's built-in mailer is meant
   for trying things out: it sends only a few emails per hour and only to addresses of your project's
   team members. For password resets that reach everyone, set up your own SMTP server here (any

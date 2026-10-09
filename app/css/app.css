@@ -311,7 +311,7 @@ textarea.input { resize: vertical; }
 .empty h3 { color: var(--text); font-size: 17px; }
 .empty p { max-width: 340px; }
 
-/* ---------- notifications (Settings) ---------- */
+/* ---------- notifications ---------- */
 
 .reminders .switch { margin-bottom: 2px; }
 .reminders .error { margin-top: 10px; font-size: 14px; font-weight: 500; }
@@ -323,6 +323,7 @@ textarea.input { resize: vertical; }
 .offer .btn.block + .btn.block { margin-top: 8px; }
 .offer .error { text-align: left; }
 .reminder-preview q { color: var(--text); }
+.reminder-privacy { margin-top: 14px; }
 
 /* ---------- product ---------- */
 

@@ -1,6 +1,6 @@
-// Reminder notifications in Edge headless (phone viewport): the Settings section in each state, switching
-// reminders on and off, a test notification, the service worker's push handler (through the DevTools
-// protocol) and the schedule upload. The cloud module is a test double (tests/fixtures/cloud-stub.js): the
+// Reminder notifications in Edge headless (phone viewport): More → Notifications in each state, switching
+// reminders on and off (with an account, and without one: anonymous registration), a test notification,
+// the service worker's push handler (through the DevTools protocol) and the schedule upload. The cloud module is a test double (tests/fixtures/cloud-stub.js): the
 // test sets its state with window.__PANTRI_STUB__ and reads what the app sent from window.__cloudStub.
 // Usage: node tests/reminders.e2e.mjs [outputDir]
 import { chromium } from 'playwright-core';
@@ -77,11 +77,11 @@ async function open({ config = true, stub = { configured: true, signedIn: true }
 
 const shot = (page, name) => page.screenshot({ path: path.join(outDir, `reminders-${name}.png`), animations: 'disabled' });
 
-/** Opens Settings and returns the Notifications card. */
+/** Opens More → Notifications and returns its card. */
 async function notificationsCard(page) {
-  await page.goto(`${server.url}#/settings`);
+  await page.goto(`${server.url}#/notifications`);
   await page.locator('.bar h1').first().waitFor();
-  return page.locator('.section:has(> .section-title:text-is("Notifications")) .card');
+  return page.locator('.card.reminders');
 }
 
 /** A pantry where Milk (dated Wed 14) and Water (5 a day, keep 6) need attention on the coming days. */
@@ -113,26 +113,37 @@ async function shown(page, tag, want = list => list.length > 0) {
 }
 
 try {
-  // ---- not set up: no section at all ----
+  // ---- not set up: no Notifications entry at all ----
   {
     const page = await open({ config: false, stub: null });
-    await notificationsCard(page);
-    assert.equal(await page.locator('.section-title:text-is("Notifications")').count(), 0);
-    log('without the cloud settings, Settings has no Notifications section');
+    await page.goto(`${server.url}#/more`);
+    await page.locator('.bar h1').first().waitFor();
+    assert.equal(await page.locator('.row-title:text-is("Notifications")').count(), 0);
+    await page.goto(`${server.url}#/notifications`);
+    await page.locator('.bar h1:text-is("Today")').waitFor();
+    log('without the cloud settings, More has no Notifications entry (and its address shows Today)');
+    await page.context().close();
+  }
+
+  // ---- no account: the switch is there all the same ----
+  {
+    const page = await open({ stub: { configured: true, signedIn: false } });
+    await page.goto(`${server.url}#/more`);
+    await page.locator('.bar h1').first().waitFor();
+    const row = page.locator('.row:has(.row-title:text-is("Notifications"))');
+    assert.equal(await text(row.locator('.row-sub')), 'Off');
+    await row.click();
+    await page.waitForFunction(() => location.hash === '#/notifications');
+    const card = page.locator('.card.reminders');
+    assert.equal(await card.getByLabel('Daily reminder').isChecked(), false);
+    assert.match(await text(card), /No account needed\./);
+    assert.match(await text(card), /the server keeps this phone's upcoming reminder texts \(like 1 to use soon: Milk\) — nothing else\. Your pantry stays on this phone\./);
+    await shot(page, 'no-account');
+    log('More → Notifications ("Off"): a switch for everyone, no account needed, and what goes online');
     await page.context().close();
   }
 
   // ---- states that need something else first ----
-  {
-    const page = await open({ stub: { configured: true, signedIn: false } });
-    const card = await notificationsCard(page);
-    assert.match(await text(card), /Reminders are sent from your account, so sign in first\./);
-    await shot(page, 'signed-out');
-    await card.getByRole('link', { name: 'Sign in' }).click();
-    await page.waitForFunction(() => location.hash === '#/account');
-    log('signed out: says reminders need an account, with a link to #/account');
-    await page.context().close();
-  }
   {
     const page = await open({ userAgent: IPHONE });
     const card = await notificationsCard(page);
@@ -252,13 +263,67 @@ try {
     assert.match(await text(card.locator('.hint').first()), /Comes at (18:30|06:30 PM) /);
     log('a new reminder time is saved and the schedule re-uploaded for 18:30');
 
+    assert.equal(await card.locator('.reminder-privacy').count(), 0); // with an account: no note about anonymous storage
+    await page.goto(`${server.url}#/more`);
+    assert.match(await text(page.locator('.row:has(.row-title:text-is("Notifications")) .row-sub')), /^Daily reminder at (18:30|06:30 PM)$/);
+    await page.goBack();
+
     await toggle.click();
     await page.waitForFunction(() => window.__cloudStub.reminders.length === 0 && window.__cloudStub.deleted.length === 1);
     sent = await cloud(page);
     assert.deepEqual([sent.subscriptions.length, sent.deleted], [0, ['https://push.example.test/send/device-1']]);
     assert.equal(await page.evaluate(() => localStorage.getItem('test-fake-push')), null);
     assert.equal(await setting(page, 'remindersOn'), false);
+    assert.equal(sent.anonymousSignIns, 0);
     log('switched off: schedule cleared on the server, this device unsubscribed and removed');
+    await page.context().close();
+  }
+
+  // ---- without an account: anonymous registration, forgotten when switched off ----
+  {
+    const page = await open({ stub: { configured: true, signedIn: false }, notifications: true, fakePush: true });
+    await page.clock.setFixedTime(MONDAY_8AM);
+    await page.goto(server.url);
+    await page.locator('.bar h1').first().waitFor();
+    await seed(page);
+    const card = await notificationsCard(page);
+    const toggle = card.getByLabel('Daily reminder');
+    await toggle.click();
+    await page.waitForFunction(() => window.__cloudStub.uploads === 1);
+    let sent = await cloud(page);
+    assert.equal(sent.anonymousSignIns, 1);
+    assert.deepEqual(sent.subscriptions.map(x => x.user), ['stub-anonymous']);
+    assert.equal(sent.reminders[0].body, '1 to use soon: Milk');
+    assert.equal(await setting(page, 'remindersOn'), true);
+    assert.equal(await toggle.isChecked(), true);
+    await card.locator('.reminder-preview:has-text("Next:")').waitFor();
+    assert.match(await text(card.locator('.reminder-privacy')), /Your pantry stays on this phone\./);
+    await shot(page, 'on-no-account');
+    log('no account: switching on signs in anonymously, registers this device and uploads the schedule');
+
+    await toggle.click();
+    await page.waitForFunction(() => window.__cloudStub.forgotten === 1);
+    sent = await cloud(page);
+    assert.deepEqual([sent.subscriptions.length, sent.reminders.length], [0, 0]);
+    assert.equal(await page.evaluate(() => window.__PANTRI_STUB__.anonymous), false);
+    assert.equal(await page.evaluate(() => localStorage.getItem('test-fake-push')), null);
+    assert.equal(await setting(page, 'remindersOn'), false);
+    log('no account: switching off has the server forget this phone (subscription, reminders, anonymous user)');
+    await page.context().close();
+  }
+  {
+    // Reminders on, notifications allowed, but no session (signed out of the account, or the server forgot it).
+    const page = await open({ stub: { configured: true, signedIn: false }, notifications: true, fakePush: true });
+    await page.clock.setFixedTime(MONDAY_8AM);
+    await page.goto(server.url);
+    await page.locator('.bar h1').first().waitFor();
+    await seed(page);
+    await page.evaluate(async () => (await import('./js/store.js')).updateSettings({ remindersOn: true }));
+    await page.waitForFunction(() => window.__cloudStub.uploads === 1, null, { timeout: 15000 });
+    const sent = await cloud(page);
+    assert.deepEqual([sent.anonymousSignIns, sent.subscriptions.length], [1, 1]);
+    assert.equal(sent.reminders[0].body, '1 to use soon: Milk');
+    log('reminders on without a session: this phone registers again by itself, without an account');
     await page.context().close();
   }
 
@@ -271,8 +336,8 @@ try {
     await seed(page);
     await page.evaluate(async () => (await import('./js/store.js')).updateSettings({ remindersOn: true }));
     const card = await notificationsCard(page);
-    assert.match(await text(card), /sign in first/);
-    assert.equal((await cloud(page)).uploads, 0);
+    await card.locator('button:text("Get them here too")').waitFor();
+    assert.equal((await cloud(page)).uploads, 0); // notifications not allowed here: no anonymous registration
     await page.evaluate(() => window.__cloudStub.setSignedIn(true));
     await page.waitForFunction(() => window.__cloudStub.uploads === 1);
     assert.equal((await cloud(page)).reminders[0].body, '1 to use soon: Milk');
@@ -338,12 +403,14 @@ try {
     const page = await open({ stub: { configured: true, signedIn: false }, notifications: true, fakePush: true, offer: true });
     await todayWithProducts(page);
     const offer = offerSheet(page);
-    assert.match(await text(offer.locator('.hint')), /free Pantri account, which also keeps your pantry backed up online/);
-    await offer.getByRole('button', { name: 'Create an account or sign in' }).click();
-    await page.waitForFunction(() => location.hash === '#/account');
-    await page.evaluate(() => window.__cloudStub.setSignedIn(true));
-    await offerSheet(page).getByRole('button', { name: 'Turn on reminders' }).waitFor();
-    log('signed out: the popup leads to the account screen and comes back with "Turn on reminders" once signed in');
+    await offer.locator('h2:text("Get a daily reminder?")').waitFor();
+    assert.match(await text(offer.locator('.hint')), /^No account needed\. You can change the time or switch it off in More → Notifications\.$/);
+    await offer.getByRole('button', { name: 'Turn on reminders' }).click();
+    await page.waitForFunction(() => window.__cloudStub.uploads === 1);
+    await page.locator('.sheet').waitFor({ state: 'detached' });
+    const sent = await cloud(page);
+    assert.deepEqual([sent.anonymousSignIns, sent.subscriptions.length], [1, 1]);
+    log('no account: the popup turns the reminder on straight away (anonymous registration)');
     await page.context().close();
   }
   {
@@ -354,7 +421,7 @@ try {
     assert.match(await text(offer), /add it to your Home Screen: tap Share → Add to Home Screen/);
     await shot(page, 'offer-iphone');
     await offer.getByRole('button', { name: "Don't ask again" }).click();
-    await page.locator('.toast:has-text("Settings → Notifications")').waitFor();
+    await page.locator('.toast:has-text("More → Notifications")').waitFor();
     assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pantri-reminder-offer')).never), true);
     log('iPhone in Safari: the popup explains Add to Home Screen; "Don\'t ask again" ends the offers');
     await page.context().close();

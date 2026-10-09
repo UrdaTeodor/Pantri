@@ -5,6 +5,8 @@ import { html, useState, useEffect, useReducer, focusOnMount } from './lib.js';
 import { ask, showToast, pickSheet, confirmSheet } from './nav.js';
 import { useApp, Header, Icon } from './kit.js';
 import { ago, dateText, timeText } from '../format.js';
+import { getState, updateSettings } from '../store.js';
+import { disablePush } from '../push.js';
 import {
   cloudStatus, onCloudStatus, signIn, signUp, signOut, sendPasswordReset, setNewPassword, syncNow, chooseCopy,
   listVersions, restoreVersion, deleteOnlineData,
@@ -291,12 +293,17 @@ function SignedIn({ st, now }) {
   const remove = async () => {
     if (!(await confirmSheet({
       title: 'Delete your online data?',
-      body: 'The online copy of your pantry, its earlier versions and your reminders are deleted, and this phone is signed out. The pantry on this phone stays. Your account itself remains: signing in again starts afresh.',
+      body: 'The online copy of your pantry, its earlier versions and your reminders are deleted, and this phone is signed out and stops getting the daily reminder. The pantry on this phone stays. Your account itself remains: signing in again starts afresh.',
       ok: 'Delete online data',
       danger: true,
     }))) return;
     try {
       await deleteOnlineData();
+      if (getState().settings.remindersOn) {
+        // Otherwise this phone would register again without an account and upload its reminders.
+        updateSettings({ remindersOn: false });
+        disablePush().catch(() => {});
+      }
       showToast('Online data deleted. The pantry is still on this phone.', { timeout: 8000 });
     } catch (e) {
       showToast(e.offline ? 'No connection. Try again when you are online.' : e.message);

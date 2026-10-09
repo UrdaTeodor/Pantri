@@ -13,6 +13,7 @@ import { ScanScreen } from './scan.js';
 import { Reorder } from './reorder.js';
 import { More, Settings, Locations, Categories, Waste, Backup, Help } from './more.js';
 import { Account } from './account.js';
+import { Notifications } from './reminders.js';
 import { getState, subscribe } from '../store.js';
 import { analyze, todayLists, reorderList } from '../model.js';
 import { cloudConfigured } from '../cloud.js';
@@ -21,9 +22,12 @@ const SCREENS = {
   today: Today, pantry: Pantry, product: ProductPage, new: ProductFormPage, edit: ProductFormPage,
   scan: ScanScreen, reorder: Reorder, more: More, settings: Settings, locations: Locations,
   categories: Categories, waste: Waste, backup: Backup, help: Help,
-  ...(cloudConfigured ? { account: Account } : {}),
+  ...(cloudConfigured ? { account: Account, notifications: Notifications } : {}),
 };
-const TAB_OF = { product: 'pantry', new: 'pantry', edit: 'pantry', settings: 'more', locations: 'more', categories: 'more', waste: 'more', backup: 'more', help: 'more', account: 'more' };
+const TAB_OF = {
+  product: 'pantry', new: 'pantry', edit: 'pantry', settings: 'more', locations: 'more', categories: 'more', waste: 'more',
+  backup: 'more', help: 'more', account: 'more', notifications: 'more',
+};
 
 /** Keeps one broken screen from blanking the whole app. */
 class ScreenBoundary extends Component {
