@@ -3,7 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-  <!-- The Android status bar takes this colour: the app's own background, so it blends in. -->
+  <!-- The Android status bar takes this colour: the app's own background, so it blends in. The installed
+       app's bottom navigation bar can't follow the page: Chrome paints it with the manifest's theme_color,
+       one colour for both themes, so that is the dark background (a white bar under the dark app looked
+       worse than a dark bar under the light one). -->
   <meta name="theme-color" content="#f3f6f5" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0d1513" media="(prefers-color-scheme: dark)">
   <meta name="color-scheme" content="light dark">
