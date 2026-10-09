@@ -1,0 +1,647 @@
+// Optional accounts, online backup and the server side of reminders, on Supabase.
+// All of it is off unless config.js has a Supabase URL and key: then cloudConfigured is false, nothing
+// is loaded or fetched, and the functions below reject. The Supabase client (vendor/supabase.js) is
+// only loaded when needed: when someone signs in, or at start-up when this phone is signed in.
+// A phone without an account that turns on notifications signs in anonymously: that session can only
+// register the phone and its reminders (the server refuses to store a pantry for it), and everything
+// here treats it as signed out: isSignedIn() is false, and the pantry isn't synced.
+
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
+import { getState, subscribe, replaceState, eraseAll } from './store.js';
+import { createSync } from './sync.js';
+
+export const cloudConfigured = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+const AUTH_KEY = 'pantri-auth'; // the session, written by supabase-js
+const SYNC_KEY = 'pantri-sync'; // this phone's sync bookkeeping (sync.js)
+const DEVICE_KEY = 'pantri-device'; // a random id for this browser or installed app
+const DEBOUNCE = 2000;
+
+/** Set by initCloud(): show a message; open the account screen. */
+const hooks = { notify: () => {}, openAccount: () => {} };
+
+// ---------- helpers ----------
+
+function readJson(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function writeJson(key, value) {
+  try {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
+  } catch { /* storage unavailable */ }
+}
+
+const call = (fn, ...args) => {
+  try {
+    fn(...args);
+  } catch (e) {
+    console.error(e);
+  }
+};
+const iso = t => new Date(t || Date.now()).toISOString();
+const notConfigured = () => new Error('Online features are not set up in this version of the app.');
+const notSignedIn = () => new Error('Not signed in.');
+const offline = () => typeof navigator !== 'undefined' && navigator.onLine === false;
+
+/** An Error for a failed Supabase call; `offline` is set when the server couldn't be reached. */
+function failure(error, status) {
+  const e = new Error(error.message || String(error));
+  e.code = error.code || '';
+  e.offline = status === 0 || error.name === 'AuthRetryableFetchError' || offline();
+  return e;
+}
+
+/** The data of a supabase-js result, or its error thrown. */
+function check(res) {
+  if (res.error) throw failure(res.error, res.status);
+  return res.data;
+}
+
+/** A random id for this browser or installed app (on phones they keep separate data). */
+function deviceId() {
+  let id = null;
+  try {
+    id = localStorage.getItem(DEVICE_KEY);
+  } catch { /* no storage */ }
+  if (!id) {
+    id = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+    try {
+      localStorage.setItem(DEVICE_KEY, id);
+    } catch { /* no storage */ }
+  }
+  return id;
+}
+
+/** "iPhone · app", "Android · Chrome", "Windows · Edge"…: which device saved something. */
+export function deviceLabel() {
+  const ua = navigator.userAgent;
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android'
+    : /Macintosh/.test(ua) ? (navigator.maxTouchPoints > 1 ? 'iPad' : 'Mac')
+      : /Windows/.test(ua) ? 'Windows' : /Linux|CrOS/.test(ua) ? 'Linux' : 'Device';
+  const installed = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  const browser = /Edg(A|iOS)?\//.test(ua) ? 'Edge' : /SamsungBrowser/.test(ua) ? 'Samsung Internet'
+    : /Firefox|FxiOS/.test(ua) ? 'Firefox' : /Chrome|CriOS/.test(ua) ? 'Chrome' : /Safari/.test(ua) ? 'Safari' : 'browser';
+  return `${os} · ${installed ? 'app' : browser}`;
+}
+
+// ---------- session ----------
+
+/** The session supabase-js saved last time: read directly, so isSignedIn() is right from the start. */
+function storedSession() {
+  const s = readJson(AUTH_KEY);
+  return s && s.refresh_token && s.user && s.user.id ? s : null;
+}
+
+let session = cloudConfigured ? storedSession() : null;
+let recovering = false; // opened from a password-reset link: offer to set a new password
+let clientPromise = null;
+const authListeners = new Set();
+
+function client() {
+  if (!cloudConfigured) return Promise.reject(notConfigured());
+  if (!clientPromise) {
+    clientPromise = import('../vendor/supabase.js').then(({ createClient }) => {
+      const c = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { storageKey: AUTH_KEY, persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit' },
+      });
+      c.auth.onAuthStateChange((event, s) => {
+        // Act afterwards, not from inside supabase-js's own callback.
+        setTimeout(() => {
+          if (event === 'PASSWORD_RECOVERY') {
+            recovering = true;
+            hooks.openAccount();
+          }
+          // No session while one is still stored: refreshing it just couldn't reach the server
+          // (e.g. the app started offline). Still signed in; a real sign-out clears the storage.
+          if (!s && storedSession()) return;
+          setSession(s);
+        }, 0);
+      });
+      return c;
+    });
+    clientPromise.catch(() => (clientPromise = null)); // e.g. offline before the file was cached: retry later
+  }
+  return clientPromise;
+}
+
+/** An account, as opposed to the anonymous session of a phone that only gets reminders. */
+const isAccount = s => !!s && !(s.user && s.user.is_anonymous);
+
+function setSession(next) {
+  const before = session ? session.user.id : null;
+  session = next && next.user ? next : null;
+  const after = session ? session.user.id : null;
+  if (before !== after) {
+    clearTimeout(timer);
+    status = { phase: 'idle', message: '', choice: null };
+    if (!after) recovering = false;
+    for (const fn of [...authListeners]) call(fn, session);
+    if (isAccount(session)) schedule(0);
+  }
+  emit();
+}
+
+/** The Supabase client and the session, confirmed (refreshed if needed). */
+async function current() {
+  if (!cloudConfigured) throw notConfigured();
+  if (!session) throw notSignedIn();
+  const c = await client();
+  const { data, error } = await c.auth.getSession();
+  if (error) throw failure(error, error.status);
+  if (!data.session) throw notSignedIn();
+  return { c, s: data.session };
+}
+
+/** The Supabase client, once the session is confirmed (refreshed if needed). */
+async function authed() {
+  return (await current()).c;
+}
+
+/** Whether this phone is signed in to an account (synchronous). */
+export function isSignedIn() {
+  return isAccount(session);
+}
+
+/** Whether this phone has a session for reminders: an account, or an anonymous one (synchronous). */
+export function hasSession() {
+  return !!session;
+}
+
+let anonymous = null; // the anonymous sign-in in progress
+
+/**
+ * The session to register this phone's reminders with: the account, or else an anonymous one, created
+ * now if needed (also when the server no longer knows this phone's anonymous session).
+ */
+async function sessionForReminders() {
+  if (session) {
+    try {
+      return await current();
+    } catch (e) {
+      if (e.offline || storedSession()) throw e; // offline, or still signed in: try again later
+      setSession(null); // the server no longer knows this session
+    }
+  }
+  if (!anonymous) {
+    anonymous = (async () => {
+      const c = await client();
+      const { data, error } = await c.auth.signInAnonymously();
+      if (error) throw authFailure(error);
+      setSession(data.session);
+      return { c, s: data.session };
+    })().finally(() => {
+      anonymous = null;
+    });
+  }
+  return anonymous;
+}
+
+/** Create this phone's anonymous session for reminders, unless it has a session already. */
+export async function ensureSession() {
+  if (!cloudConfigured) throw notConfigured();
+  await sessionForReminders();
+}
+
+/** Calls fn(session | null) now and whenever the session changes (account or anonymous). Returns an unsubscribe function. */
+export function onAuth(fn) {
+  authListeners.add(fn);
+  call(fn, session);
+  return () => {
+    authListeners.delete(fn);
+  };
+}
+
+// ---------- status (for the account screen) ----------
+
+let status = { phase: 'idle', message: '', choice: null };
+const statusListeners = new Set();
+
+function setStatus(patch) {
+  status = { ...status, ...patch };
+  emit();
+}
+
+function emit() {
+  for (const fn of [...statusListeners]) call(fn);
+}
+
+/**
+ * What the account screen shows. phase: 'idle' | 'syncing' | 'synced' | 'offline' | 'error' |
+ * 'choose' (both this phone and the account have a pantry: `choice` holds { local, remote } summaries).
+ */
+export function cloudStatus() {
+  const signedIn = isAccount(session);
+  const m = signedIn ? meta.load() : null;
+  return {
+    configured: cloudConfigured,
+    signedIn,
+    email: signedIn ? session.user.email || '' : '',
+    recovering,
+    ...status,
+    syncedAt: m ? m.syncedAt : null,
+    pending: signedIn && engine.isDirty(),
+  };
+}
+
+export function onCloudStatus(fn) {
+  statusListeners.add(fn);
+  return () => {
+    statusListeners.delete(fn);
+  };
+}
+
+// ---------- sync ----------
+
+const blankMeta = userId => ({ userId, baseRev: 0, syncedRev: null, hash: null, changedAt: null, syncedAt: null });
+const meta = {
+  load() {
+    const userId = session ? session.user.id : null;
+    const m = readJson(SYNC_KEY);
+    return m && m.userId === userId ? m : blankMeta(userId);
+  },
+  save(m) {
+    writeJson(SYNC_KEY, m);
+  },
+};
+
+const engine = createSync({
+  api: {
+    async head() {
+      const c = await authed();
+      const row = check(await c.from('pantries').select('rev, changed_at, device, products').maybeSingle());
+      return row && { rev: Number(row.rev), changedAt: Date.parse(row.changed_at), device: row.device, products: row.products };
+    },
+    async fetch() {
+      const c = await authed();
+      const row = check(await c.from('pantries').select('state, rev, changed_at, device').maybeSingle());
+      return row && { state: row.state, rev: Number(row.rev), changedAt: Date.parse(row.changed_at), device: row.device };
+    },
+    async save({ state, baseRev, changedAt, reason }) {
+      const c = await authed();
+      const r = check(await c.rpc('save_pantry', {
+        p_state: state, p_base_rev: baseRev, p_changed_at: iso(changedAt), p_device: deviceLabel(), p_device_id: deviceId(),
+        p_reason: reason,
+      }));
+      return { ...r, rev: Number(r.rev) };
+    },
+    async stash({ state, changedAt, reason }) {
+      const c = await authed();
+      check(await c.rpc('stash_pantry', { p_state: state, p_changed_at: iso(changedAt), p_device: deviceLabel(), p_reason: reason }));
+    },
+  },
+  store: { getState, replaceState },
+  meta,
+});
+
+let timer = null;
+let running = null;
+let again = false;
+let paused = false; // while signing out, deleting the online data or restoring a version
+let retryDelay = 0;
+
+function schedule(delay = DEBOUNCE) {
+  clearTimeout(timer);
+  timer = setTimeout(() => {
+    timer = null;
+    syncNow();
+  }, delay);
+}
+
+async function runOnce(opts) {
+  if (offline()) {
+    // No point trying (supabase-js would retry a token refresh for half a minute): the 'online' event resumes.
+    setStatus({ phase: 'offline', message: '' });
+    return;
+  }
+  setStatus({ phase: 'syncing', message: '' });
+  try {
+    const r = await engine.syncOnce(opts);
+    retryDelay = 0;
+    if (r.action === 'ask') return setStatus({ phase: 'choose', choice: { local: r.local, remote: r.remote } });
+    if (r.action === 'gone') return onlineCopyGone();
+    setStatus({ phase: 'synced', choice: null });
+    if (r.conflict) {
+      hooks.notify(r.action === 'kept-local'
+        ? 'Another device changed the pantry at the same time. The newer changes from this phone were kept; the other version is under Account → Earlier versions.'
+        : "Another device made newer changes, so they replaced this phone's. This phone's version is under Account → Earlier versions.");
+    }
+  } catch (e) {
+    const away = e.offline || offline() || /fetch|network/i.test(e.message);
+    setStatus({ phase: away ? 'offline' : 'error', message: away ? '' : e.message, choice: null });
+    retryDelay = Math.min(retryDelay ? retryDelay * 2 : 30000, 10 * 60000);
+    schedule(retryDelay);
+  }
+}
+
+function run(opts) {
+  running = (async () => {
+    try {
+      let o = opts;
+      do {
+        again = false;
+        await runOnce(o);
+        o = {};
+      } while (again && isAccount(session) && !paused);
+    } finally {
+      running = null;
+    }
+  })();
+  return running;
+}
+
+/** Sync now, or once more after the sync that is running. Never rejects: cloudStatus() tells how it went. */
+export function syncNow() {
+  if (!cloudConfigured || !isAccount(session) || paused) return Promise.resolve();
+  if (running) {
+    again = true;
+    return running;
+  }
+  return run({});
+}
+
+/** After phase 'choose': keep this phone's pantry ('local') or take the online one ('remote'). */
+export async function chooseCopy(which) {
+  while (running) await running;
+  if (!isAccount(session)) throw notSignedIn();
+  await run({ choice: which });
+  if (status.phase === 'offline') throw new Error('No connection. Try again when you are online.');
+  if (status.phase === 'error') throw new Error(status.message);
+}
+
+/** The online copy this phone was synced with was deleted (from another device): sign out here. */
+async function onlineCopyGone() {
+  await endSession();
+  hooks.notify('Your online data was deleted from another device, so this phone was signed out. The pantry is still on this phone.');
+}
+
+// ---------- accounts ----------
+
+const appUrl = () => location.href.split('#')[0];
+
+/** A readable Error for a failed sign-in / sign-up / password call. */
+function authFailure(error) {
+  const code = error.code || '';
+  const msg = error.message || '';
+  if (error.name === 'AuthRetryableFetchError' || error.status === 0 || offline()) return new Error('No connection. Try again when you are online.');
+  if (code === 'invalid_credentials' || /invalid login credentials/i.test(msg)) return new Error('Wrong email or password.');
+  if (code === 'user_already_exists' || code === 'email_exists' || /already registered/i.test(msg)) {
+    return new Error('There is already an account with this email. Sign in instead.');
+  }
+  if (code === 'email_not_confirmed') return new Error('Confirm your email address first: open the link in the email you got.');
+  if (/rate_limit/.test(code) || /rate limit/i.test(msg)) return new Error('Too many attempts. Wait a while and try again.');
+  if (code === 'signup_disabled') return new Error('New accounts are switched off for this app.');
+  if (code === 'email_address_invalid') return new Error("That email address doesn't look right.");
+  return new Error(msg || 'Something went wrong. Try again.');
+}
+
+/** Create an account. Resolves to { needsConfirmation } (true if the project requires confirming the email). */
+export async function signUp(email, password) {
+  const c = await client();
+  const before = await anonymousToken();
+  const { data, error } = await c.auth.signUp({ email, password, options: { emailRedirectTo: appUrl() } });
+  if (error) throw authFailure(error);
+  if (!data.session) return { needsConfirmation: true };
+  signedIn(data.session, before);
+  return { needsConfirmation: false };
+}
+
+export async function signIn(email, password) {
+  const c = await client();
+  const before = await anonymousToken();
+  const { data, error } = await c.auth.signInWithPassword({ email, password });
+  if (error) throw authFailure(error);
+  signedIn(data.session, before);
+}
+
+/**
+ * Someone signed in on purpose: the sign-in rules apply (upload, take the online copy, or ask). The
+ * anonymous user this phone had for reminders is deleted on the server (the phone registers again,
+ * with the account, if reminders are on).
+ */
+function signedIn(s, anonymousBefore = null) {
+  writeJson(SYNC_KEY, null); // bookkeeping left from a session that ended by itself doesn't count
+  setSession(s);
+  if (anonymousBefore) forgetAnonymous(anonymousBefore);
+}
+
+/** The access token of this phone's anonymous session (refreshed if needed), or null. */
+async function anonymousToken() {
+  if (!session || isAccount(session)) return null;
+  try {
+    return (await current()).s.access_token;
+  } catch {
+    return null;
+  }
+}
+
+/** Delete an anonymous user (its push subscription and reminders) on the server. Resolves to whether that worked. */
+async function forgetAnonymous(token) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/forget_anonymous_device`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    return res.ok;
+  } catch {
+    return false; // offline: the server deletes it within a week once it has no device left
+  }
+}
+
+/**
+ * Notifications switched off on a phone without an account: delete its anonymous user on the server
+ * (with the push subscription and reminders) and end the session here. Does nothing for an account.
+ */
+export async function forgetThisDevice() {
+  if (!session || isAccount(session)) return;
+  const token = await anonymousToken();
+  if (token && !(await forgetAnonymous(token))) return; // kept: switching on and off again retries
+  try {
+    const c = await client();
+    await c.auth.signOut({ scope: 'local' });
+  } catch { /* the client couldn't load: the stored session is dropped below */ }
+  writeJson(AUTH_KEY, null);
+  setSession(null);
+}
+
+/** Email a link that opens the app and lets the user choose a new password. */
+export async function sendPasswordReset(email) {
+  const c = await client();
+  const { error } = await c.auth.resetPasswordForEmail(email, { redirectTo: appUrl() });
+  if (error) throw authFailure(error);
+}
+
+export async function setNewPassword(password) {
+  const c = await authed();
+  const { error } = await c.auth.updateUser({ password });
+  if (error) throw authFailure(error);
+  recovering = false;
+  emit();
+}
+
+/** Forget this phone's push subscription online, so the account's reminders stop arriving here. */
+async function removeThisDevicesPush() {
+  try {
+    const reg = navigator.serviceWorker && (await navigator.serviceWorker.getRegistration());
+    const sub = reg && reg.pushManager && (await reg.pushManager.getSubscription());
+    if (sub) await deletePushSubscription(sub.endpoint);
+  } catch { /* offline or no push: nothing to remove */ }
+}
+
+/** Sign this phone out and forget its sync bookkeeping. The pantry stays on the phone. */
+async function endSession() {
+  clearTimeout(timer);
+  await removeThisDevicesPush();
+  try {
+    const c = await client();
+    await c.auth.signOut({ scope: 'local' }); // forgets the session here even when offline
+  } catch {
+    writeJson(AUTH_KEY, null);
+  }
+  writeJson(SYNC_KEY, null);
+  setSession(null);
+}
+
+/** Sign out on this phone. The pantry stays here unless `removeData`; the online copy stays in the account. */
+export async function signOut({ removeData = false } = {}) {
+  if (!isAccount(session)) return;
+  if (!removeData) await syncNow(); // a last upload of recent changes (if online)
+  paused = true;
+  try {
+    while (running) await running;
+    await endSession();
+    if (removeData) eraseAll();
+  } finally {
+    paused = false;
+  }
+}
+
+/** Delete the online pantry, its earlier versions, push subscriptions and reminders; then sign out here. */
+export async function deleteOnlineData() {
+  const c = await authed();
+  paused = true;
+  try {
+    while (running) await running;
+    check(await c.rpc('delete_my_data'));
+    await endSession();
+  } finally {
+    paused = false;
+  }
+}
+
+// ---------- earlier versions ----------
+
+/** Earlier versions kept online, newest first: [{ id, savedAt, reason, device, changedAt, products }]. */
+export async function listVersions() {
+  const c = await authed();
+  const rows = check(await c.from('pantry_history')
+    .select('id, saved_at, reason, device, changed_at, products')
+    .order('saved_at', { ascending: false })
+    .order('id', { ascending: false }));
+  return rows.map(r => ({
+    id: r.id, savedAt: Date.parse(r.saved_at), reason: r.reason, device: r.device || '',
+    changedAt: r.changed_at ? Date.parse(r.changed_at) : null, products: r.products,
+  }));
+}
+
+/** Make an earlier version the pantry again, online and on this phone (the current one is kept as a version). */
+export async function restoreVersion(id) {
+  await syncNow();
+  if (engine.isDirty()) throw new Error("This phone's latest changes aren't online yet. Check the connection and try again.");
+  const c = await authed();
+  paused = true;
+  try {
+    while (running) await running;
+    const r = check(await c.rpc('restore_pantry_version', { p_id: id, p_device: deviceLabel(), p_device_id: deviceId() }));
+    engine.apply({ state: r.state, rev: Number(r.rev), changedAt: Date.parse(r.changedAt) });
+    setStatus({ phase: 'synced', message: '', choice: null });
+  } finally {
+    paused = false;
+  }
+}
+
+// ---------- reminders (used by the device side of notifications) ----------
+
+/**
+ * Store this device's push subscription (updated if the endpoint is known) for the account, or for an
+ * anonymous session created now if this phone has no account. `sub` is PushSubscription.toJSON():
+ * { endpoint, keys: { p256dh, auth } }. Resolves to the id of the user it was stored for.
+ */
+export async function savePushSubscription(sub, { device } = {}) {
+  if (!sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
+    throw new Error('savePushSubscription: expected PushSubscription.toJSON() ({ endpoint, keys: { p256dh, auth } }).');
+  }
+  const { c, s } = await sessionForReminders();
+  check(await c.rpc('save_push_subscription', {
+    p_endpoint: sub.endpoint, p_p256dh: sub.keys.p256dh, p_auth: sub.keys.auth, p_device: device || deviceLabel(),
+  }));
+  return s.user.id;
+}
+
+/** Forget a push subscription (by endpoint) of this phone's user. */
+export async function deletePushSubscription(endpoint) {
+  const c = await authed();
+  check(await c.from('push_subscriptions').delete().eq('endpoint', endpoint));
+}
+
+/**
+ * Replace the unsent reminders of this phone's user (account or anonymous), atomically, with
+ * items: [{ sendAt: ISO-8601 string, title, body, url, tag }] (at most 60). Items more than 6 hours late
+ * and ones that were already sent (same sendAt, title and tag) are skipped. Resolves to how many wait.
+ */
+export async function replaceReminders(items) {
+  if (!Array.isArray(items)) throw new Error('replaceReminders: items must be an array.');
+  const c = await authed();
+  return check(await c.rpc('replace_reminders', {
+    items: items.map(({ sendAt, title, body, url, tag }) => ({ sendAt, title, body, url, tag })),
+  }));
+}
+
+// ---------- start-up ----------
+
+let started = false;
+
+/**
+ * Start syncing (called once the app is on screen; does nothing when not configured).
+ * notify(text) shows a message; openAccount() shows the account screen.
+ */
+export function initCloud({ notify, openAccount } = {}) {
+  if (!cloudConfigured || started) return;
+  started = true;
+  if (notify) hooks.notify = notify;
+  if (openAccount) hooks.openAccount = openAccount;
+
+  // A password-reset link opens the app with a session (or an error) in the URL hash.
+  const params = new URLSearchParams(location.hash.replace(/^#\/?/, ''));
+  if (params.get('error_description')) {
+    hooks.openAccount();
+    hooks.notify(params.get('error_code') === 'otp_expired'
+      ? 'That link has expired or was used already. Ask for a new one.'
+      : params.get('error_description'));
+  } else if (params.get('access_token')) {
+    client().catch(() => {});
+  }
+  if (session) client().catch(() => {}); // restores (and refreshes) the session
+
+  subscribe(() => {
+    if (!isAccount(session)) return;
+    engine.noteLocalChange();
+    if (status.phase !== 'choose') schedule();
+    emit();
+  });
+  addEventListener('online', () => {
+    if (isAccount(session) && status.phase !== 'choose') schedule(0);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!isAccount(session) || status.phase === 'choose') return;
+    if (document.visibilityState === 'visible') schedule(0);
+    else if (engine.isDirty()) syncNow(); // upload before the app is put away
+  });
+  if (isAccount(session)) schedule(0);
+}

@@ -1,0 +1,78 @@
+{
+  "id": "Pantri/",
+  "name": "Pantri",
+  "short_name": "Pantri",
+  "description": "Pantry inventory: scan barcodes, track expiry dates, and get told what to check and what to reorder. Works offline.",
+  "lang": "en",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#0d1513",
+  "background_color": "#0d1513",
+  "categories": [
+    "productivity",
+    "utilities"
+  ],
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Scan item",
+      "short_name": "Scan",
+      "description": "Scan a barcode to look up or take an item",
+      "url": "./#/scan",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Restock",
+      "short_name": "Restock",
+      "description": "Scan items to add stock",
+      "url": "./#/scan?mode=restock",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Reorder list",
+      "short_name": "Reorder",
+      "description": "Items that are running low",
+      "url": "./#/reorder",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ]
+}

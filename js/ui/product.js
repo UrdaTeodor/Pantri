@@ -1,0 +1,299 @@
+// Product detail: stock & estimate, batches, rate suggestion, settings summary, nutrition, history.
+
+import { html, useState, useEffect, useRef } from './lib.js';
+import { navigate, goBack, pickSheet, confirmSheet, showToast } from './nav.js';
+import { useApp, Header, Icon, Thumb, Empty, placeText, siteContext } from './kit.js';
+import { openAddStock, openCount, openUse, chooseAndWaste, openBatch, undoToast } from './sheets.js';
+import {
+  rateSuggestion, observedRate, unusedAtExpiry, wasteSummary, fromPerDay, roundNice, findAllByCode, siteOf,
+} from '../model.js';
+import { qtyText, rateText, dayText, ago, expiryText, fmtNum, PER_LABEL, plural } from '../format.js';
+import {
+  applyRate, dismissRateHint, deleteProduct, setReorder, setOrdered, copyProductToSite, updateProduct, getState,
+} from '../store.js';
+import { lookupNutrition, NUTRITION_VERSION } from '../lookup.js';
+import { toEnglish, languageName } from '../translate.js';
+
+const EVENT_TEXT = {
+  add: (e, u) => `Added ${qtyText(e.qty, u)}${e.initial ? ' (first stock)' : ''}`,
+  count: (e, u) => (e.qty === 0 ? 'Counted: none left' : `Counted ${qtyText(e.qty, u)}`),
+  used: (e, u) => `Used ${qtyText(e.qty, u)}`,
+  waste: (e, u) => `Threw away ${qtyText(e.qty, u)} (${e.reason || 'expired'})`,
+  adjust: (e, u) => `Corrected stock ${e.qty > 0 ? '+' : '−'}${qtyText(Math.abs(e.qty), u)}`,
+};
+
+function Suggestion({ p, sug }) {
+  return html`
+    <div class="card suggestion">
+      <${Icon} name="bulb" />
+      <div class="row-main">
+        <b>${sug.faster ? 'Going faster than expected' : sug.faster === false ? 'Going slower than expected' : 'Usage measured'}</b>
+        <span class="row-sub">
+          Your counts over ${fmtNum(roundNice(sug.days))} days suggest ~${fmtNum(sug.qty)} per ${PER_LABEL[sug.per]}${p.rate ? ` (set: ${fmtNum(p.rate.qty)})` : ''}.
+        </span>
+        <div class="btn-row">
+          <button class="btn primary small" onClick=${() => { applyRate(p.id, { qty: sug.qty, per: sug.per }); showToast('Usage rate updated'); }}>
+            Use ${fmtNum(sug.qty)} per ${PER_LABEL[sug.per]}
+          </button>
+          <button class="btn small" onClick=${() => dismissRateHint(p.id)}>Keep mine</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+const NUTRIENT_ROWS = [
+  ['kcal', 'Energy'], ['fat', 'Fat'], ['saturated', 'of which saturates', true], ['carbs', 'Carbohydrate'],
+  ['sugars', 'of which sugars', true], ['fiber', 'Fibre'], ['protein', 'Protein'], ['salt', 'Salt'],
+];
+const NOVA = { 1: 'unprocessed', 2: 'culinary ingredient', 3: 'processed', 4: 'ultra-processed' };
+const lookedUp = new Set(); // products whose nutrition facts were fetched by themselves this app run
+const translating = new Set(); // products whose ingredients are being put into English
+
+/**
+ * Nutrition facts from Open Food Facts. Products scanned before they were kept (or kept in an older
+ * form) get them looked up once, by themselves, when online lookups are on; otherwise a button does it.
+ * Ingredients in another language are translated into English once, and kept.
+ */
+function Nutrition({ p, now }) {
+  const { state } = useApp();
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [original, setOriginal] = useState(false); // show the ingredients as printed
+  const [, setTranslating] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+  const codes = p.barcodes.map(b => b.code);
+  const fetchNow = () => {
+    setBusy(true);
+    setFailed(false);
+    lookupNutrition(codes)
+      .then(found => updateProduct(p.id, { nutrition: found }))
+      .catch(() => alive.current && setFailed(true))
+      .finally(() => alive.current && setBusy(false));
+  };
+  useEffect(() => {
+    const stale = p.nutrition === undefined || (p.nutrition && p.nutrition.v !== NUTRITION_VERSION);
+    if (!stale || !codes.length || !state.settings.lookup || lookedUp.has(p.id)) return;
+    lookedUp.add(p.id);
+    fetchNow();
+  }, [p.id]);
+
+  const n = p.nutrition;
+  const foreign = !!(n && n.ingredients && n.lang && n.lang !== 'en');
+  useEffect(() => {
+    if (!foreign || n.ingredientsEn || translating.has(p.id)) return;
+    translating.add(p.id);
+    setTranslating(true);
+    toEnglish(n.ingredients, n.lang, { online: state.settings.lookup })
+      .then(english => {
+        const current = getState().products.find(x => x.id === p.id);
+        if (!english || !current || !current.nutrition || current.nutrition.ingredients !== n.ingredients) return;
+        updateProduct(p.id, { nutrition: { ...current.nutrition, ingredientsEn: english, translated: true } });
+      })
+      .finally(() => {
+        translating.delete(p.id);
+        if (alive.current) setTranslating(false);
+      });
+  }, [p.id, n && n.ingredients, foreign]);
+  if (!n) {
+    if (!codes.length || n === null) return null; // nothing to look up, or nothing found
+    return html`
+      <section class="section">
+        <h2 class="section-title">Nutrition</h2>
+        ${busy ? html`<p class="muted pad">Looking up the nutrition facts…</p>` : html`
+          <div class="card pad">
+            <p class="muted">${failed ? "Couldn't look up the nutrition facts (offline?)." : 'The nutrition facts can be looked up on Open Food Facts.'}</p>
+            <button class="btn block" onClick=${fetchNow}>Look up nutrition facts</button>
+          </div>`}
+      </section>`;
+  }
+  const v = n.per100 || {};
+  const amount = k => (k === 'kcal' ? `${fmtNum(Math.round(v.kcal))} kcal${v.kj != null ? ` · ${fmtNum(Math.round(v.kj))} kJ` : ''}` : `${fmtNum(v[k])} g`);
+  const rows = NUTRIENT_ROWS.filter(([k]) => v[k] != null);
+  return html`
+    <section class="section">
+      <h2 class="section-title">Nutrition ${rows.length > 0 && html`<span class="muted small">per 100 ${n.per === 'ml' ? 'ml' : 'g'}</span>`}</h2>
+      <div class="card pad nutrition">
+        ${(n.nutriScore || n.nova) && html`
+          <div class="nutri-badges">
+            ${n.nutriScore && html`<span class=${`nutri-score nutri-${n.nutriScore}`}>Nutri-Score ${n.nutriScore.toUpperCase()}</span>`}
+            ${n.nova && html`<span class="chip">NOVA ${n.nova} · ${NOVA[n.nova]}</span>`}
+          </div>`}
+        ${rows.length > 0 && html`
+          <table class="nutri-table">
+            <tbody>
+              ${rows.map(([k, label, sub]) => html`<tr class=${sub ? 'sub' : ''} key=${k}><th scope="row">${label}</th><td>${amount(k)}</td></tr>`)}
+            </tbody>
+          </table>`}
+        ${n.serving && html`<p class="hint">Serving: ${n.serving}</p>`}
+        ${n.allergens && n.allergens.length > 0 && html`<p class="nutri-allergens"><b>Allergens:</b> ${n.allergens.join(', ')}</p>`}
+        ${(n.ingredientsEn || n.ingredients) && html`
+          <details class="ingredients">
+            <summary>Ingredients</summary>
+            <p lang=${original || !n.ingredientsEn ? n.lang || null : 'en'}>${original || !n.ingredientsEn ? n.ingredients : n.ingredientsEn}</p>
+            ${foreign && html`
+              <p class="hint">${n.ingredientsEn
+                ? html`${n.translated ? `Translated automatically from ${languageName(n.lang)}` : `In English from ${n.source || 'Open Food Facts'}`} · <button class="link-btn inline" onClick=${() => setOriginal(!original)}>${original ? 'Show in English' : `Show the ${languageName(n.lang)}`}</button>`
+                : translating.has(p.id) ? `In ${languageName(n.lang)}: translating…` : `In ${languageName(n.lang)}: no English translation yet (it is tried again when online).`}</p>`}
+          </details>`}
+        <p class="hint">From ${n.source || 'Open Food Facts'} · ${ago(n.fetchedAt, now)}
+          <button class="link-btn inline" disabled=${busy} onClick=${fetchNow}>${busy ? 'Updating…' : failed ? 'Offline? Try again' : 'Update'}</button></p>
+      </div>
+    </section>`;
+}
+
+export function ProductPage({ route }) {
+  const { state, info, now } = useApp();
+  const id = route.parts[1];
+  const i = info.get(id);
+  if (!i) {
+    return html`<${Header} title="Product" back="#/pantry" />
+      <main class="page"><${Empty} title="This product no longer exists" /></main>`;
+  }
+  const p = i.product;
+  const e = i.est;
+  const s = i.settings;
+  const tracked = e.rate > 0;
+  const sites = siteContext(state);
+  const sug = rateSuggestion(p, state.events, s);
+  const obs = observedRate(state.events, id, s);
+  const waste = wasteSummary({ ...state, events: state.events.filter(x => x.productId === id) }, now).rows[0];
+  const category = state.categories.find(c => c.id === p.categoryId);
+  const events = state.events.filter(x => x.productId === id && !(x.type === 'count' && x.initial)).slice(-15).reverse();
+  const present = i.batches.filter(b => b.present);
+
+  let paceLine = 'Usage not tracked — stock changes only when you count, use or add.';
+  if (tracked) {
+    const runOut = i.out ? 'probably used up' : e.runOutAt ? `runs out ~${dayText(e.runOutAt, now)}` : 'lasts for years at this pace';
+    paceLine = `Uses ${rateText(p.rate)} · ${runOut}`;
+  }
+
+  const more = async () => {
+    const choice = await pickSheet({
+      title: p.name,
+      options: [
+        p.orderedAt
+          ? { label: 'Not ordered after all', value: 'unorder' }
+          : { label: 'Mark as ordered', sub: 'Moves it to "On order" until stock is added', value: 'order' },
+        p.reorder === false
+          ? { label: 'Show on the reorder list again', value: 'reorder-on' }
+          : { label: "Don't reorder this product", sub: 'For one-off items', value: 'reorder-off' },
+        ...(sites.multi ? [{ label: 'Also track at another site…', sub: 'Its own stock, usage and reorder list there', value: 'copy' }] : []),
+        { label: 'Delete product', sub: 'Removes it and its stock', value: 'delete', danger: true },
+      ],
+    });
+    if (choice === 'copy') {
+      const target = await pickSheet({
+        title: `Track ${p.name} at…`,
+        options: sites.sites.filter(x => x.id !== i.siteId).map(x => ({ label: x.name, value: x.id })),
+      });
+      if (!target) return;
+      const existing = p.barcodes.flatMap(b => findAllByCode(state.products, b.code))
+        .find(m => siteOf(state.locations, m.product.locationId) === target);
+      const name = sites.sites.find(x => x.id === target).name;
+      if (existing) {
+        showToast(`Already tracked at ${name}`);
+        navigate(`#/product/${existing.product.id}`);
+      } else {
+        const copy = copyProductToSite(id, target);
+        showToast(`Now tracking ${p.name} at ${name} — add its stock there`);
+        navigate(`#/product/${copy}`);
+      }
+      return;
+    }
+    if (choice === 'order' || choice === 'unorder') setOrdered(id, choice === 'order');
+    if (choice === 'reorder-on' || choice === 'reorder-off') {
+      setReorder(id, choice === 'reorder-on');
+      undoToast(choice === 'reorder-on' ? 'Back on the reorder list' : 'Won\'t be suggested for reorder');
+    }
+    if (choice === 'delete' && await confirmSheet({ title: `Delete ${p.name}?`, body: 'Its stock and history are removed. Waste already logged stays in the waste report.', ok: 'Delete', danger: true })) {
+      goBack('#/pantry');
+      deleteProduct(id);
+      undoToast(`Deleted ${p.name}`);
+    }
+  };
+
+  return html`
+    <${Header} title=${p.name} back="#/pantry" actions=${html`
+      <button class="icon-btn" aria-label="Edit" onClick=${() => navigate(`#/edit/${id}`)}><${Icon} name="edit" /></button>
+      <button class="icon-btn" aria-label="More" onClick=${more}><${Icon} name="dots" /></button>`} />
+    <main class="page">
+      <div class="product-hero">
+        <${Thumb} p=${p} size=${64} />
+        <div>
+          <div class="muted">${[p.brand, p.size, category && category.name].filter(Boolean).join(' · ') || 'No details'}</div>
+          ${p.orderedAt && html`<span class="chip info">ordered ${dayText(p.orderedAt, now)}</span>`}
+          ${p.reorder === false && html`<span class="chip muted">not reordered</span>`}
+        </div>
+      </div>
+
+      <div class="card stock-card">
+        <div class="stock-qty">${qtyText(e.total, p.unit, tracked)}</div>
+        <div class="row-sub">${paceLine}</div>
+        <div class="row-sub">Last counted ${ago(p.countedAt, now)}${p.minStock > 0 ? ` · minimum ${fmtNum(p.minStock)}` : ''}</div>
+        <div class="action-grid">
+          <button class="btn primary" onClick=${() => openAddStock(p)}><${Icon} name="plus" size=${18} /> Add</button>
+          <button class="btn" onClick=${() => openCount(p)}><${Icon} name="check" size=${18} /> Count</button>
+          ${!tracked && html`<button class="btn" onClick=${() => openUse(p)} disabled=${i.out}><${Icon} name="minus" size=${18} /> Used</button>`}
+          <button class="btn danger-soft" onClick=${() => chooseAndWaste(i, now)} disabled=${!present.length}>
+            <${Icon} name="trash" size=${18} /> Thrown away
+          </button>
+        </div>
+      </div>
+
+      ${sug && html`<${Suggestion} p=${p} sug=${sug} />`}
+
+      <section class="section">
+        <h2 class="section-title">Batches <span class="count">${present.length}</span></h2>
+        ${present.length ? html`
+          <div class="card list">
+            ${present.map(b => {
+              const unused = tracked && b.batch.expiry && !b.expired ? unusedAtExpiry(p, e, b.batch, s) : null;
+              return html`
+                <button class="row" key=${b.batch.id} onClick=${() => openBatch(p, b)}>
+                  <span class="row-main">
+                    <span class="row-title">${qtyText(b.qty, p.unit, tracked)}</span>
+                    <span class=${`row-sub${b.expired ? ' danger-text' : ''}`}>
+                      ${b.batch.expiry ? expiryText(b.batch.expiry, now) : 'No expiry date'} · ${placeText(state, b.batch.locationId)}
+                    </span>
+                    ${unused >= 0.5 && html`<span class="row-sub warn-text"><${Icon} name="alert" size=${13} /> ~${fmtNum(Math.round(unused))} won't be used before it expires</span>`}
+                  </span>
+                  <${Icon} name="edit" size=${18} />
+                </button>`;
+            })}
+          </div>` : html`<p class="muted pad">None in stock.</p>`}
+      </section>
+
+      <section class="section">
+        <h2 class="section-title">Details</h2>
+        <div class="card">
+          <dl class="details">
+            <dt>Usage</dt><dd>${rateText(p.rate)}</dd>
+            ${obs && html`<dt>Measured</dt><dd>~${fmtNum(roundNice(fromPerDay(obs.perDay, (p.rate && p.rate.per) || 'week', s)))} per ${PER_LABEL[(p.rate && p.rate.per) || 'week']} (from your counts)</dd>`}
+            <dt>Reorder</dt><dd>${p.reorder === false ? 'off' : `when ${p.minStock > 0 ? `≤ ${fmtNum(p.minStock)}` : 'out'}${tracked ? ' or running out soon' : ''}`}${p.orderQty ? ` · usually ${qtyText(p.orderQty, p.unit)}` : ''}</dd>
+            <dt>Location</dt><dd>${placeText(state, p.locationId)}</dd>
+            <dt>Barcodes</dt><dd>${p.barcodes.length ? p.barcodes.map(b => html`<div>${b.code}${b.units > 1 ? ` · ${b.units} ${plural(p.unit, b.units)}` : ''}</div>`) : 'none'}</dd>
+            ${p.shelfLifeDays != null && html`<dt>Shelf life</dt><dd>${p.shelfLifeDays} days last time</dd>`}
+            ${waste && html`<dt>Waste (90 days)</dt><dd>${qtyText(waste.wasted, p.unit)}${waste.share != null ? ` · ${Math.round(waste.share * 100)}% of what was added` : ''}</dd>`}
+            ${p.notes && html`<dt>Notes</dt><dd class="pre">${p.notes}</dd>`}
+          </dl>
+        </div>
+      </section>
+
+      <${Nutrition} p=${p} now=${now} />
+
+      <section class="section">
+        <h2 class="section-title">History</h2>
+        ${events.length ? html`
+          <div class="card list">
+            ${events.map(ev => html`
+              <div class="row static" key=${ev.id}>
+                <span class="row-main">
+                  <span>${(EVENT_TEXT[ev.type] || (() => ev.type))(ev, p.unit)}</span>
+                  <span class="row-sub">${ago(ev.at, now)}${ev.expiry ? ` · exp ${ev.expiry}` : ''}</span>
+                </span>
+              </div>`)}
+          </div>` : html`<p class="muted pad">No history yet.</p>`}
+      </section>
+    </main>`;
+}

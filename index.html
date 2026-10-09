@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <!-- The Android status bar takes this colour: the app's own background, so it blends in. The installed
+       app's bottom navigation bar can't follow the page: Chrome paints it with the manifest's theme_color,
+       one colour for both themes, so that is the dark background (a white bar under the dark app looked
+       worse than a dark bar under the light one). -->
+  <meta name="theme-color" content="#f3f6f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d1513" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Pantri: pantry inventory. Scan barcodes, track expiry dates, and get told what to check and reorder.">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Pantri">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Pantri</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="./css/app.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "preact": "./vendor/preact.module.js",
+        "preact/hooks": "./vendor/hooks.module.js",
+        "htm": "./vendor/htm.module.js"
+      }
+    }
+  </script>
+  <script type="module" src="./js/main.js"></script>
+</head>
+<body>
+  <div id="app"><div class="boot">Loading pantry…</div></div>
+  <noscript>Pantri needs JavaScript.</noscript>
+</body>
+</html>
